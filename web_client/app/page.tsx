@@ -1,65 +1,32 @@
 'use client';
-import { useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
-
-export default function LandingPage() {
-  const router = useRouter();
-  const [isChecking, setIsChecking] = useState(true);
-
-  // בדיקה אוטומטית: אם המשתמש כבר מחובר, נזרוק אותו ישר לדשבורד
-  useEffect(() => {
-    const userId = localStorage.getItem('userId');
-    if (userId) {
-      router.push('/dashboard');
-    } else {
-      setIsChecking(false);
-    }
-  }, [router]);
-
-  if (isChecking) return null;
-
-  return (
-    <div className="min-h-screen bg-[#050505] bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(120,119,198,0.15),rgba(255,255,255,0))] flex flex-col items-center justify-center p-6 text-center selection:bg-amber-500/30 overflow-hidden relative font-sans">
-
-      {/* תאורת רקע יוקרתית */}
-      <div className="absolute top-1/4 left-1/4 w-[500px] h-[500px] bg-blue-600/20 rounded-full blur-[120px] pointer-events-none"></div>
-      <div className="absolute bottom-1/4 right-1/4 w-[500px] h-[500px] bg-amber-500/10 rounded-full blur-[120px] pointer-events-none"></div>
-
-      <div className="max-w-4xl space-y-8 animate-fade-in-up relative z-10">
-
-        {/* לוגו מרחף */}
-        <div className="inline-flex items-center justify-center h-28 w-28 bg-gradient-to-br from-blue-600 to-indigo-900 rounded-[2rem] shadow-[0_0_50px_rgba(59,130,246,0.4)] mb-4 transform hover:scale-105 transition-all duration-500">
-          <span className="text-white font-black text-6xl">N</span>
-        </div>
-
-        {/* כותרת ניאון אפלה */}
-        <h1 className="text-6xl md:text-8xl font-black text-white tracking-tighter uppercase drop-shadow-sm">
-          PLAYOFF<span className="text-amber-500 drop-shadow-[0_0_25px_rgba(245,158,11,0.5)]">PREDICT</span>
-        </h1>
-
-        <p className="text-sm md:text-base text-gray-400 font-bold max-w-2xl mx-auto leading-relaxed uppercase tracking-[0.2em]">
-          The Ultimate 2026 Enterprise Sportsbook Simulator. <br className="hidden md:block" /> Place bets, run real-time simulations, and conquer the finals.
-        </p>
-
-        {/* כפתורי פעולה בסטייל זכוכית מרחפת */}
-        <div className="flex flex-col sm:flex-row gap-6 justify-center mt-12 pt-8">
-          <button
-            onClick={() => router.push('/login')}
-            className="px-12 py-5 relative group overflow-hidden bg-gradient-to-r from-blue-600 to-indigo-800 hover:from-blue-500 hover:to-indigo-700 text-white font-black rounded-2xl shadow-[0_0_30px_rgba(59,130,246,0.3)] transform transition-all duration-300 active:scale-[0.98] uppercase tracking-[0.15em] text-sm"
-          >
-            <span className="relative z-10">Access Terminal</span>
-            <div className="absolute inset-0 bg-white/20 translate-y-full group-hover:translate-y-0 transition-transform duration-300 ease-out"></div>
-          </button>
-
-          <button
-            onClick={() => router.push('/register')}
-            className="px-12 py-5 bg-white/[0.02] backdrop-blur-md text-white border border-white/10 rounded-2xl font-black hover:border-amber-500/50 hover:bg-amber-500/10 hover:shadow-[0_0_30px_rgba(245,158,11,0.2)] hover:text-amber-400 transform transition-all duration-300 active:scale-[0.98] uppercase tracking-[0.15em] text-sm"
-          >
-            Initialize Wallet
-          </button>
-        </div>
-
-      </div>
-    </div>
-  );
+import Link from 'next/link';
+import Image from 'next/image';
+import {useState} from 'react';
+import {Brand} from '@/components/ui';
+import {LanguageSwitcher,useLanguage} from '@/lib/i18n';
+import demo from '@/lib/demo-market.json';
+const views=[['court','המגרש','The court','כל הסדרות והמשחק הבא במסך עבודה אחד.','Every active series and next game in one workspace.'],['markets','השווקים','The markets','מנצחת, הפרש וסך נקודות. בוחרים לפני שמריצים.','Winner, spread and total. Choose before you simulate.'],['bracket','הדרך לגמר','The bracket','ארבעה ניצחונות בסדרה. ארבעה סיבובים לאליפות.','Four wins per series. Four rounds to a champion.'],['ledger','התוצאות שלך','Your record','הסכום, היחס והתוצאה נשמרים גם בעונה הבאה.','Stakes, prices and outcomes stay on record across seasons.']];
+function DemoMarket(){
+ const {t}=useLanguage();const [selected,setSelected]=useState(0),[amount,setAmount]=useState('25');
+ const teams=Object.keys(demo.odds.moneyline),prices=Object.values(demo.odds.moneyline);
+ const valid=/^\d+(\.\d{1,2})?$/.test(amount)&&Number(amount)>=1&&Number(amount)<=1000;
+ const payout=valid?Math.floor((Math.round(Number(amount)*100)*Math.round(prices[selected]*100)+50)/100)/100:null;
+ return <section className="tp-demo" data-ui aria-labelledby="demo-title"><div className="tp-demo-head"><h2 id="demo-title">{t('מנסים תחזית','Try a forecast')}</h2><span>{t('הדגמת מודל','Model demo')}</span></div><p>{t('משחק פתיחה · ארבעה ניצחונות כדי להעפיל','Opening game · Four wins to advance')}</p><div className="tp-demo-choices" role="group" aria-label={t('בחירת מנצחת להדגמה','Choose a demonstration winner')}>{teams.map((team,index)=><button type="button" key={team} aria-pressed={selected===index} onClick={()=>setSelected(index)}><span dir="ltr">{team}</span><strong>{prices[index].toFixed(2)}</strong></button>)}</div><label htmlFor="demo-amount">{t('סכום מדומה · 1–1,000','Virtual stake · 1–1,000')}</label><input id="demo-amount" inputMode="decimal" value={amount} onChange={e=>setAmount(e.target.value)} aria-invalid={!valid} aria-describedby="demo-help" maxLength={7}/><div className="tp-demo-return" aria-live="polite"><span>{t('החזר אפשרי כולל הסכום','Possible return including stake')}</span><output dir="ltr">{payout===null?'—':payout.toFixed(2)}</output></div><p id="demo-help">{valid?t('נתוני מודל היסטוריים. הדגמה בלבד; לא נשלחת תחזית.','Historical model data. Demo only; no forecast is submitted.'):t('יש להזין 1–1,000, עד שתי ספרות אחרי הנקודה.','Enter 1–1,000, with up to two decimal places.')}</p></section>;
+}
+export default function Home(){
+ const {t}=useLanguage();const [view,setView]=useState(0);
+ return <div className="tp-page"><a href="#main" className="skip-link">{t('דלג לתוכן','Skip to content')}</a><header className="tp-nav tp-wrap"><Brand/><LanguageSwitcher/><Link className="text-link" href="/login">{t('כניסה','Sign in')} ↗</Link></header><main id="main" tabIndex={-1}>
+ <section className="tp-hero"><div className="tp-wrap tp-hero-grid"><div className="tp-hero-copy"><h1>{t('הפלייאוף שלך.','Your playoffs.')}<br/>{t('הבחירה שלך.','Your call.')}</h1><p>{t('16 קבוצות. תחזית אחת בכל פעם. מעבדת הפלייאוף שלך משלבת יחסים, סדרות וסימולציות עם יתרה מדומה בלבד.','16 teams. One call at a time. Your personal playoff lab combines odds, series and simulations with virtual funds.')}</p><Link href="/register" className="button primary">{t('פותחים עונה','Start your season')} ↗</Link><p className="tp-small">{t('בלי הפקדות. בלי משיכות. רק כדורסל.','No deposits. No withdrawals. Just basketball.')}</p></div><DemoMarket/></div><div className="tp-hero-band"><div className="tp-wrap"><span>{t('עד ארבעה ניצחונות.','First to four wins.')}</span><span>{t('עד אלופה אחת.','Down to one champion.')}</span></div></div></section>
+ <section className="tp-showcase tp-wrap" aria-labelledby="showcase-title"><div className="tp-section-head"><h2 id="showcase-title">{t('רואים את כל המגרש.','Read the entire field.')}</h2><p>{t('מבט מבפנים על הטורניר האישי שלך.','Inside your personal tournament.')}</p></div><div className="tp-view-controls" role="group" aria-label={t('בחירת תצוגת מוצר','Choose a product view')}>{views.map((item,index)=><button key={item[0]} type="button" onClick={()=>setView(index)} aria-pressed={index===view} aria-controls="product-view">{t(item[1],item[2])}</button>)}</div><div id="product-view" className="tp-product-view" aria-live="polite"><div className="tp-product-picture" data-ui>{views.map((item,index)=><Image key={item[0]} hidden={index!==view} src={`/product/${item[0]}.jpg`} width={1280} height={800} alt={t(`צילום מתוך האתר: ${item[1]}`,`Actual app screenshot: ${item[2]}`)}/>)}</div><p>{t(views[view][3],views[view][4])}</p></div></section>
+ <section className="tp-process" aria-label={t('איך משחקים','How to play')}><div className="tp-wrap">{[
+ ['קוראים את היחס.','Read the price.','פותחים את המשחק הבא. בוחנים מי משחקת בבית ומה המודל מציע לכל שוק.','Open the next game. Check the home team and the model price for each market.'],
+ ['בוחרים צד.','Pick your side.','מגדירים סכום מתוך היתרה המדומה ובודקים את ההחזר האפשרי לפני האישור.','Choose a virtual stake and review the possible return before confirming.'],
+ ['מריצים משחק.','Run the game.','התוצאה מסדירה את התחזיות. הסדרה מתקדמת ועץ הפלייאוף מתעדכן עד לאליפות.','The result settles your forecasts. The series and bracket advance all the way to a champion.']
+ ].map(([he,en,bodyHe,bodyEn])=><article key={en}><h2>{t(he,en)}</h2><p>{t(bodyHe,bodyEn)}</p></article>)}</div></section>
+ <section className="tp-faq" aria-label={t('שאלות נפוצות','Common questions')}>{[
+ ['משחקים בכסף אמיתי?','Is this real money?','לא. כל היתרות וההחזרים הם חלק מסימולציה אישית. אין תשלומים, הפקדות או פרסים.','No. Balances and returns belong to a personal simulation. There are no payments, deposits or prizes.'],
+ ['אלה משחקים בשידור חי?','Are these live games?','לא. הסימולציה משתמשת בנתונים היסטוריים ובמודל מקומי. התוצאות נוצרות במנוע המשחק ואינן תוצאות NBA בזמן אמת.','No. The simulation uses historical data and a local model. The engine generates outcomes; this is not a live NBA feed.'],
+ ['מה קורה בעונה חדשה?','What happens in a new season?','העונה הקודמת עוברת לארכיון. תחזיות פתוחות מתבטלות והסכומים מוחזרים ליתרה. ההיסטוריה נשמרת.','The previous season is archived. Open forecasts are cancelled and stakes refunded. Your history stays available.']
+ ].map(([he,en,answerHe,answerEn])=><article key={en}><div className="tp-wrap"><h2>{t(he,en)}</h2><p>{t(answerHe,answerEn)}</p></div></article>)}</section><Link href="/register" className="tp-cta"><span className="tp-wrap">{t('מתחילים.','Play.')} <span aria-hidden="true">↗</span></span></Link></main>
+ <footer className="tp-footer tp-wrap"><div><Brand/><p>{t('הפלייאוף האישי שלך. יתרה מדומה בלבד.','Your personal playoffs. Virtual funds only.')}</p></div><nav aria-label={t('קישורים נוספים','More links')}><Link href="/login">{t('כניסה לחשבון','Sign in')}</Link><Link href="/accessibility">{t('הצהרת נגישות','Accessibility statement')}</Link></nav><p className="tp-footer-name" dir="ltr" aria-hidden="true">PLAYOFF LAB</p></footer></div>;
 }

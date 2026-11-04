@@ -1,0 +1,93 @@
+/* Data terminal, brand-preserved: 1280 = 944 + 16 + 320;
+   main peer cards: 944 = 464 + 16 + 464. At 980px the rail becomes a row. */
+.td-dashboard{--td-gap:16px;--td-control:36px;color:var(--ink);font-size:14px;line-height:1.45;font-variant-numeric:tabular-nums}
+.td-dashboard h1,.td-dashboard h2,.td-dashboard p{margin:0}
+.td-dashboard button,.td-dashboard input,.td-dashboard select{font:inherit;letter-spacing:0}
+.td-dashboard button,.td-dashboard input,.td-dashboard select{border-radius:4px}
+.td-dashboard button{transition:border-color .12s,color .12s;background:transparent;cursor:pointer}
+.td-dashboard button:disabled{color:var(--muted);opacity:.65;cursor:not-allowed}
+.td-dashboard button:focus-visible,.td-dashboard input:focus-visible,.td-dashboard select:focus-visible,.td-dashboard a:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.td-title-row{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-bottom:20px}
+.td-title-row h1{font-size:24px;line-height:32px;font-weight:600;letter-spacing:0}
+.td-title-row p{display:flex;align-items:center;flex-wrap:wrap;gap:8px;color:var(--muted);font-size:13px;margin-top:4px}
+.td-title-row>.button{min-height:36px;padding:7px 14px;font-size:13px}
+.td-workspace{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:var(--td-gap);align-items:start}
+.td-markets{min-width:0}
+.td-conference-filters{display:flex;gap:24px;border-bottom:1px solid var(--border);margin-bottom:16px;min-height:40px;align-items:stretch}
+.td-conference-filters>button{border:0;border-bottom:1px solid transparent;border-radius:0;margin-bottom:-1px;display:flex;align-items:center;gap:8px;padding:8px 0;color:var(--muted);font-size:14px;white-space:nowrap}
+.td-conference-filters>button.td-active-filter{border-bottom-color:var(--accent);color:var(--ink)}
+.td-conference-filters>button>span{font-size:12px;min-width:14px;text-align:end}
+.td-match-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--td-gap);align-items:start}
+.td-match{border:1px solid var(--border);border-radius:4px;background:var(--surface);padding:16px;min-width:0}
+.td-match-meta{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px;color:var(--muted);font-size:12px}
+.td-match-meta b{font-weight:500;color:var(--ink);margin-inline-start:5px}
+.td-match-title{font-size:16px;line-height:24px;letter-spacing:0;font-weight:600;display:flex;flex-direction:column;gap:5px}
+.td-team-title-row{display:flex;gap:12px;align-items:center;justify-content:space-between}
+.td-team-title-row>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.td-team-title-row>b{font-size:20px;font-weight:500;line-height:24px;flex:none}
+.td-series-strip{list-style:none;padding:0;margin:14px 0;display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;direction:ltr}
+.td-series-strip>li{padding:5px 0;display:flex;align-items:center;flex-direction:column;border:1px solid var(--border);border-bottom-color:var(--border);font-size:11px;color:var(--muted);min-width:0}
+.td-series-strip .td-game-number{font-size:13px;color:var(--ink);line-height:18px}
+.td-series-strip>li.td-played{background:var(--raised)}
+.td-series-strip>li.td-next{border-bottom-color:var(--accent)}
+.td-series-strip>li.td-next>span{color:var(--ink)}
+.td-market-tabs{display:flex;gap:20px;border-bottom:1px solid var(--border);margin-bottom:12px;min-height:34px}
+.td-market-tabs>button{border:0;border-bottom:1px solid transparent;border-radius:0;min-width:0;padding:6px 0;color:var(--muted);font-size:13px;margin-bottom:-1px;line-height:20px}
+.td-market-tabs>button[aria-selected=true]{border-bottom-color:var(--accent);color:var(--ink)}
+.td-market-label{color:var(--muted);font-size:12px;margin-bottom:6px!important}
+.td-quote-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.td-quote{display:flex;justify-content:space-between;align-items:center;gap:8px;min-height:54px;width:100%;border:1px solid var(--border);padding:8px 10px;color:var(--ink);text-align:start;min-width:0}
+.td-quote>span{font-size:12px;line-height:17px;overflow-wrap:normal;word-break:normal;min-width:0}
+.td-quote>strong{font-size:20px;font-weight:500;line-height:26px;flex:none}
+.td-quote:hover:not(:disabled){border-color:var(--muted)}
+.td-quote.td-selected{border-bottom-color:var(--accent)}
+.td-bet-form{margin-top:14px}
+.td-bet-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(100px,.95fr);gap:8px;align-items:end}
+.td-bet-row>label,.td-future-form>label{display:flex;flex-direction:column;gap:5px;color:var(--muted);font-size:12px;min-width:0}
+.td-bet-row input,.td-future-form select{height:var(--td-control);min-width:0;width:100%;padding:7px 10px;border:1px solid var(--border);background:var(--bg);color:var(--ink)}
+.td-bet-row input{direction:ltr;text-align:end;font-variant-numeric:tabular-nums}
+.td-submit{height:var(--td-control);padding:7px 10px;border:1px solid var(--border);color:var(--ink);font-size:13px!important;line-height:20px;white-space:nowrap}
+.td-submit:hover:not(:disabled){border-color:var(--muted)}
+.td-submit.td-submit-lead{background:var(--ink);border-color:var(--ink);color:var(--bg)}
+.td-return{display:flex;gap:5px;flex-wrap:wrap;color:var(--muted);font-size:12px;min-height:18px;margin-top:8px!important}
+.td-return strong{font-weight:500;color:var(--ink)}
+.td-match-actions{display:flex;gap:20px;margin-top:12px;padding-top:10px;border-top:1px solid var(--border);align-items:center}
+.td-match-actions button{border:0;border-bottom:1px solid transparent;border-radius:0;min-height:28px;padding:3px 0;color:var(--ink);font-size:13px}
+.td-match-actions button:hover:not(:disabled){border-bottom-color:var(--accent)}
+.td-rail{display:flex;flex-direction:column;gap:var(--td-gap);min-width:0}
+.td-side-panel{padding:16px;background:var(--surface);border:1px solid var(--border);border-radius:4px}
+.td-side-panel h2{font-size:16px;line-height:24px;font-weight:600;letter-spacing:0;margin-bottom:14px}
+.td-future-form{display:flex;flex-direction:column;gap:12px}
+.td-future-form select{font-size:13px;max-width:100%}
+.td-future-form .td-return{margin-top:0!important}
+.td-tournament-controls p{font-size:13px;line-height:20px;color:var(--muted);margin-bottom:14px}
+.td-tournament-controls>.button{width:100%;min-height:36px;padding:7px 12px;font-size:13px}
+.td-season-controls{display:flex;flex-direction:column;align-items:flex-start}
+.td-season-controls>button{padding:4px 0;border:0;border-bottom:1px solid transparent;border-radius:0;min-height:28px;color:var(--ink);font-size:13px}
+.td-season-controls>button:not(:first-of-type){margin-top:10px}
+.td-season-controls>button:hover:not(:disabled){border-bottom-color:var(--accent)}
+.td-season-controls>small{font-size:12px;line-height:18px;color:var(--muted);margin-top:4px}
+.td-data-note{color:var(--muted);font-size:12px;line-height:19px}
+.td-champion{display:flex;flex-direction:column;gap:10px}
+.td-champion p{color:var(--muted);font-size:13px}
+.td-champion strong{font-size:20px;font-weight:500}
+.td-champion .text-link{font-size:13px}
+.td-market-empty{background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:24px;display:flex;flex-direction:column;gap:16px;align-items:flex-start}
+.td-market-empty h2{font-size:18px;line-height:26px;font-weight:600}
+.td-market-empty p{font-size:14px;color:var(--muted)}
+.td-no-market{color:var(--muted);font-size:13px;padding:12px 0}
+.td-skeleton-row{display:grid;grid-template-columns:repeat(2,1fr);gap:16px;margin-top:16px}
+.td-skeleton-row>div{height:340px;background:var(--surface);border:1px solid var(--border);border-radius:4px}
+.td-loading>p{color:var(--muted);font-size:14px}
+.td-dashboard .notice{font-size:13px;padding:10px 12px;margin:12px 0}
+@media(min-width:981px){.td-match-grid>.td-match:last-child:nth-child(odd){grid-column:1/-1}.td-match-grid>.td-match:only-child{max-width:none}}
+@media(max-width:1200px){.td-workspace{grid-template-columns:minmax(0,1fr) 280px}.td-match-grid{grid-template-columns:minmax(0,1fr)}.td-match-grid>.td-match:only-child{max-width:none}.td-market-tabs{gap:24px}.td-quote>span{font-size:14px}.td-match-title{font-size:17px}}
+@media(max-width:980px){.td-workspace{grid-template-columns:minmax(0,1fr)}.td-rail{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:start}.td-match-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.td-match-grid>.td-match:last-child:nth-child(odd){grid-column:1/-1}.td-match-title{font-size:16px}.td-quote>span{font-size:12px}.td-data-note{align-self:start}.td-title-row{margin-bottom:16px}}
+@media(max-width:760px){.td-title-row{align-items:flex-start}.td-title-row h1{font-size:22px;line-height:28px}.td-title-row p{font-size:12px;gap:6px}.td-title-row>.button{min-height:40px;font-size:12px;padding:8px 10px}.td-match-grid{grid-template-columns:minmax(0,1fr)}.td-rail{grid-template-columns:minmax(0,1fr)}.td-conference-filters{gap:24px;min-height:44px}.td-conference-filters>button{min-height:44px;font-size:14px}.td-conference-filters>button>span{font-size:12px}.td-match{padding:16px}.td-match-title{font-size:16px}.td-match-meta{font-size:12px}.td-quote{min-height:56px;padding:8px 10px}.td-quote>span{font-size:14px;line-height:20px}.td-market-tabs{gap:24px;min-height:44px}.td-market-tabs>button{min-height:44px;font-size:14px}.td-bet-row{grid-template-columns:minmax(0,1fr) minmax(120px,.95fr)}.td-bet-row>label,.td-future-form>label{font-size:13px}.td-bet-row input,.td-submit,.td-future-form select{height:44px}.td-market-label,.td-return{font-size:13px}.td-match-actions{gap:24px}.td-match-actions>button{font-size:14px;min-height:44px}.td-season-controls>button{min-height:44px;font-size:14px}.td-tournament-controls>.button{min-height:44px;font-size:14px}.td-series-strip>li{font-size:11px}.td-skeleton-row{grid-template-columns:1fr}.td-skeleton-row>div:last-child{display:none}.td-market-empty{padding:20px}.td-side-panel h2{font-size:17px}}
+@media(prefers-reduced-motion:reduce){.td-dashboard button{transition:none}}
+
+/* Seven small game cells are data, not a decorative progress meter. */
+.td-series-strip>li{font-size:12px}
+@media(max-width:760px){.td-series-strip>li{font-size:12px}}
+
+@media(max-width:760px){.td-dashboard input,.td-dashboard select{font-size:16px}}

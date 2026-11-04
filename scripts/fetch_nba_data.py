@@ -1,28 +1,16 @@
+"""Explicit offline download with bounded timeout/retry and atomic output."""
 from nba_api.stats.endpoints import leaguegamelog
-from pathlib import Path
+from pipeline_utils import BASE, atomic_csv, nba_request, require_columns
 
-# הגדרת נתיב בסיס לפרויקט
-BASE = Path(__file__).resolve().parent.parent
 
-print("Fetching NBA game logs for the current 2025-26 season...")
+def main():
+    frame = nba_request(leaguegamelog.LeagueGameLog, season="2025-26", season_type_all_star="Regular Season")
+    require_columns(frame, ["GAME_ID", "GAME_DATE", "TEAM_ID", "TEAM_NAME", "MATCHUP", "WL"])
+    if frame.duplicated(["GAME_ID", "TEAM_ID"]).any():
+        raise ValueError("Duplicate team/game rows")
+    atomic_csv(frame, BASE / "data" / "nba_real_games.csv")
+    print("Regular-season games saved.")
 
-# משיכת נתוני העונה הנוכחית מה-API
-games = leaguegamelog.LeagueGameLog(
-    season='2025-26',
-    season_type_all_star='Regular Season'
-)
 
-# המרה ל-DataFrame של Pandas
-df = games.get_data_frames()[0]
-
-# ודאות שתיקיית data קיימת
-data_dir = BASE / 'data'
-data_dir.mkdir(exist_ok=True)
-
-# שמירה לקובץ ה-CSV המרכזי של הפרויקט
-output_path = data_dir / 'nba_real_games.csv'
-df.to_csv(output_path, index=False)
-
-print("\n--- Data Sample ---")
-print(df[['GAME_DATE', 'TEAM_NAME', 'MATCHUP', 'WL']].head())
-print(f"\n✅ NBA 2025-26 data saved successfully to: {output_path}")
+if __name__ == "__main__":
+    main()

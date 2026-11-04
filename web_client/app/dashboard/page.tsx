@@ -1,389 +1,177 @@
 'use client';
-import { useEffect, useState } from 'react';
+
+import Link from 'next/link';
+import { useId, useRef, useState, type KeyboardEvent } from 'react';
 import { useRouter } from 'next/navigation';
+import { useLanguage } from '@/lib/i18n';
+import { api, ApiError, record, parseUser, parseLines, parseFutures, money, wagerValue, messageOf, type Line, type User } from '@/lib/api';
+import { useProtected } from '@/lib/use-protected';
+import { Shell, LoadError, Notice, ConfirmDialog } from '@/components/ui';
 
-const getTeamLogo = (teamName: string) => {
-  const logos: Record<string, string> = {
-    "Atlanta Hawks": "atl", "Boston Celtics": "bos", "Brooklyn Nets": "bkn",
-    "Charlotte Hornets": "cha", "Chicago Bulls": "chi", "Cleveland Cavaliers": "cle",
-    "Dallas Mavericks": "dal", "Denver Nuggets": "den", "Detroit Pistons": "det",
-    "Golden State Warriors": "gs", "Houston Rockets": "hou", "Indiana Pacers": "ind",
-    "LA Clippers": "lac", "Los Angeles Lakers": "lal", "Memphis Grizzlies": "mem",
-    "Miami Heat": "mia", "Milwaukee Bucks": "mil", "Minnesota Timberwolves": "min",
-    "New Orleans Pelicans": "no", "New York Knicks": "ny", "Oklahoma City Thunder": "okc",
-    "Orlando Magic": "orl", "Philadelphia 76ers": "phi", "Phoenix Suns": "phx",
-    "Portland Trail Blazers": "por", "Sacramento Kings": "sac", "San Antonio Spurs": "sa",
-    "Toronto Raptors": "tor", "Utah Jazz": "uta", "Washington Wizards": "wsh"
-  };
-  const abbr = logos[teamName];
-  return abbr ? `https://a.espncdn.com/i/teamlogos/nba/500/${abbr}.png` : "https://cdn-icons-png.flaticon.com/512/806/806001.png";
-};
+async function loadDashboard(signal?: AbortSignal) {
+  const [user, lines, futures] = await Promise.all([
+    api('/me', parseUser, undefined, 15000, signal),
+    api('/betting-lines', parseLines, undefined, 15000, signal),
+    api('/futures-lines', parseFutures, undefined, 15000, signal),
+  ]);
+  return {user, lines, futures};
+}
+type Market = 'moneyline' | 'series_winner' | 'spread' | 'over_under_points';
+type Conference = 'all' | 'west' | 'east' | 'finals';
+type Selection = {type: Market | 'futures_champion'; target: string; value: number | null; odds: number};
+type Place = (matchup: string, game: number, selection: Selection, amount: number) => Promise<void>;
+type Simulate = (path: string, body: Record<string, unknown>, success?: string) => Promise<void>;
 
-const GameCard = ({ line, userBalance, onPlaceBet, onSimulate, onSimulateSeries, isBankrupt }: any) => {
-  const [localBetAmount, setLocalBetAmount] = useState<number | ''>('');
-  const [selectedBet, setSelectedBet] = useState<any>(null);
-  const [cardError, setCardError] = useState<string>('');
-  const [isPlacing, setIsPlacing] = useState(false);
+function SeriesStrip({nextGame}: {nextGame: number}) {
+  const {t} = useLanguage();
+  return <ol className="td-series-strip" aria-label={t('התקדמות סדרת הטוב משבעה','Best-of-seven series progress')}>
+    {Array.from({length:7}, (_,i) => i+1).map(game => <li key={game} className={game < nextGame ? 'td-played' : game === nextGame ? 'td-next' : ''} aria-current={game === nextGame ? 'step' : undefined}>
+      <span className="td-game-number">{game}</span><span>{game < nextGame ? t('שוחק','Played') : game === nextGame ? t('הבא','Next') : '—'}</span>
+    </li>)}
+  </ol>;
+}
 
-  const handleConfirmBet = async () => {
-    setCardError('');
-    if (!selectedBet) { setCardError("Please select a bet first."); return; }
-    if (!localBetAmount || Number(localBetAmount) <= 0) { setCardError("Enter a valid wager amount."); return; }
-    if (Number(localBetAmount) > userBalance) { setCardError("Insufficient funds!"); return; }
-
-    setIsPlacing(true);
-    await onPlaceBet(line.series_id, line.next_game_number, selectedBet.type, selectedBet.target, selectedBet.value, selectedBet.odds, Number(localBetAmount));
-    setIsPlacing(false);
-    setSelectedBet(null);
-    setLocalBetAmount('');
-  };
-
-  const handleSimulateClick = () => {
-    setCardError('');
-    setSelectedBet(null);
-    setLocalBetAmount('');
-    onSimulate(line.series_id, line.next_game_number, line.team1, line.team2);
-  };
-
-  const handleSimulateSeriesClick = () => {
-    setCardError('');
-    setSelectedBet(null);
-    setLocalBetAmount('');
-    onSimulateSeries(line.series_id, line.team1, line.team2);
-  };
-
-  const getBtnStyle = (type: string, target: string) => {
-    const isSelected = selectedBet?.type === type && selectedBet?.target === target;
-    return `flex-1 border rounded-2xl p-4 transition-all text-center ${isSelected ? 'bg-indigo-500/20 border-indigo-500 shadow-[0_0_15px_rgba(99,102,241,0.3)]' : 'bg-white/5 border-white/5 hover:border-indigo-500/50 hover:bg-white/10'}`;
-  };
-
-  return (
-    <div className="group bg-[#111827] border border-white/10 hover:border-white/20 rounded-3xl overflow-hidden transition-all duration-500 shadow-xl relative">
-      <div className="bg-black/40 border-b border-white/5 p-6 flex flex-col sm:flex-row justify-between items-center gap-4">
-        <div className="flex items-center gap-4">
-          <div className="flex flex-col items-center gap-1 w-24">
-            <img src={getTeamLogo(line.team1)} alt={line.team1} className="w-12 h-12 object-contain drop-shadow-xl" />
-            <span className="font-bold text-[10px] text-gray-300 uppercase text-center">{line.team1}</span>
-          </div>
-          <span className="text-gray-600 font-black text-sm italic">VS</span>
-          <div className="flex flex-col items-center gap-1 w-24">
-            <img src={getTeamLogo(line.team2)} alt={line.team2} className="w-12 h-12 object-contain drop-shadow-xl" />
-            <span className="font-bold text-[10px] text-gray-300 uppercase text-center">{line.team2}</span>
-          </div>
-        </div>
-        <div className="flex items-center gap-3">
-          <span className="text-xs font-bold text-gray-400">Score: {line.series_score}</span>
-          <div className="bg-white/5 px-4 py-1.5 rounded-lg text-xs font-black text-white uppercase tracking-widest">Game {line.next_game_number}</div>
-        </div>
+function GameCard({line,user,busy,place,simulate,featured}: {line:Line;user:User;busy:boolean;place:Place;simulate:Simulate;featured:boolean}) {
+  const {t,locale} = useLanguage();
+  const id = useId();
+  const [market,setMarket] = useState<Market>('moneyline');
+  const [selection,setSelection] = useState<Selection|null>(null);
+  const [amount,setAmount] = useState('');
+  const [error,setError] = useState('');
+  const odds = line.odds;
+  const tabs: {key:Market;label:string}[] = [
+    {key:'moneyline',label:t('משחק','Game')},
+    ...(odds?.series_winner ? [{key:'series_winner' as const,label:t('סדרה','Series')}] : []),
+    ...(odds?.spread ? [{key:'spread' as const,label:t('הפרש','Spread')}] : []),
+    {key:'over_under_points',label:t('נקודות','Total')},
+  ];
+  const options: {selection:Selection;label:string}[] = !odds ? [] : market === 'over_under_points' ? [
+    {selection:{type:market,target:'Over',value:odds.over_under_points.line,odds:odds.over_under_points.over_odds},label:t('מעל','Over')},
+    {selection:{type:market,target:'Under',value:odds.over_under_points.line,odds:odds.over_under_points.under_odds},label:t('מתחת','Under')},
+  ] : [line.team1,line.team2].map((team,index) => {
+    const spread = index === 0 ? odds.spread?.team1_spread : odds.spread?.team2_spread;
+    return {selection:{type:market,target:team,value:market === 'spread' ? spread ?? null : null,
+      odds:market === 'series_winner' ? odds.series_winner![team] : market === 'spread' ? odds.spread!.odds : odds.moneyline[team]},
+      label:market === 'spread' ? `${team} (${(spread ?? 0) > 0 ? '+' : ''}${spread})` : team};
+  });
+  function chooseMarket(next:Market) {setMarket(next);setSelection(null);setError('');}
+  function tabKeys(event:KeyboardEvent<HTMLButtonElement>, index:number) {
+    const forward = locale === 'he' ? 'ArrowLeft' : 'ArrowRight';
+    const backward = locale === 'he' ? 'ArrowRight' : 'ArrowLeft';
+    let target = index;
+    if (event.key === forward) target = (index+1)%tabs.length;
+    else if (event.key === backward) target = (index-1+tabs.length)%tabs.length;
+    else if (event.key === 'Home') target = 0;
+    else if (event.key === 'End') target = tabs.length-1;
+    else return;
+    event.preventDefault();chooseMarket(tabs[target].key);
+    event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[target]?.focus();
+  }
+  async function submit(event:React.FormEvent) {
+    event.preventDefault();if (busy) return;setError('');
+    try {
+      if (!selection) throw new Error('יש לבחור תחזית לפני השליחה');
+      await place(line.series_id,line.next_game_number,selection,wagerValue(amount,user.balance));
+      setAmount('');setSelection(null);
+    } catch(e) {setError(messageOf(e));}
+  }
+  const scores = line.series_score.split('-').map(value => value.trim());
+  const conference = line.series_id.startsWith('West') ? t('מערב','West') : line.series_id.startsWith('East') ? t('מזרח','East') : t('גמר NBA','NBA Finals');
+  return <article className={`td-match ${featured ? 'td-featured' : ''}`} aria-labelledby={`${id}-title`}>
+    <header className="td-match-meta"><span>{conference} · {t('משחק','Game')} {line.next_game_number}</span><span>{t('סדרה','Series')} <b dir="ltr">{line.series_score}</b></span></header>
+    <h2 id={`${id}-title`} className="td-match-title"><span className="td-team-title-row"><span dir="auto">{line.team1}</span><b>{scores[0] ?? '—'}</b></span><span className="td-team-title-row"><span dir="auto">{line.team2}</span><b>{scores[1] ?? '—'}</b></span></h2>
+    <SeriesStrip nextGame={line.next_game_number}/>
+    {line.is_unlocked && odds ? <>
+      <div className="td-market-tabs" role="tablist" aria-label={t('סוג שוק','Market type')}>
+        {tabs.map((tab,index) => <button key={tab.key} type="button" role="tab" id={`${id}-tab-${tab.key}`} aria-selected={market === tab.key} aria-controls={`${id}-market`} tabIndex={market === tab.key ? 0 : -1} disabled={busy} onKeyDown={event => tabKeys(event,index)} onClick={() => chooseMarket(tab.key)}>{tab.label}</button>)}
       </div>
+      <div id={`${id}-market`} role="tabpanel" aria-labelledby={`${id}-tab-${market}`} className="td-market-panel">
+        <p className="td-market-label">{market === 'moneyline' ? t('מנצחת המשחק','Game winner') : market === 'series_winner' ? t('מנצחת הסדרה','Series winner') : market === 'spread' ? t('הפרש נקודות','Point spread') : t(`סך נקודות: ${odds.over_under_points.line}`,`Total points: ${odds.over_under_points.line}`)}</p>
+        <div className="td-quote-row">{options.map(option => <button key={option.selection.target} type="button" className={`td-quote ${selection?.type === market && selection.target === option.selection.target ? 'td-selected' : ''}`} disabled={busy} aria-pressed={selection?.type === market && selection.target === option.selection.target} onClick={() => {setSelection(option.selection);setError('');}}><span dir="auto">{option.label}</span><strong dir="ltr">{option.selection.odds.toFixed(2)}</strong></button>)}</div>
+      </div>
+      <form onSubmit={submit} className="td-bet-form" aria-busy={busy}>
+        {error && <Notice error>{error}</Notice>}
+        <div className="td-bet-row"><label htmlFor={`${id}-amount`}>{t('סכום מדומה ($)','Virtual wager ($)')}<input id={`${id}-amount`} type="number" min="0.01" max={user.balance} step="0.01" inputMode="decimal" value={amount} onChange={event => setAmount(event.target.value)} placeholder="0.00" required disabled={busy}/></label><button className={`td-submit ${featured ? 'td-submit-lead' : ''}`} disabled={busy || user.balance <= 0}>{busy ? t('מתבצע…','Working…') : t('שליחת הימור','Place bet')}</button></div>
+        <p className="td-return">{selection && amount && Number.isFinite(Number(amount)) ? <>{t('זכייה אפשרית','Potential return')} <strong dir="ltr">{money(Number(amount)*selection.odds)}</strong> <span>{t('כולל סכום ההימור','including stake')}</span></> : t('בחרו יחס כדי להרכיב הימור.','Select odds to build a bet.')}</p>
+      </form>
+      <footer className="td-match-actions"><button type="button" disabled={busy} onClick={() => void simulate('/simulate-game',{matchup:line.series_id,game_number:line.next_game_number}).catch(() => {})}>{t('הרצת משחק','Simulate game')}</button><button type="button" disabled={busy} onClick={() => void simulate('/simulate-series-auto',{matchup:line.series_id}).catch(() => {})}>{t('הרצת סדרה','Simulate series')}</button></footer>
+    </> : <p className="td-no-market">{t('השוק ייפתח כאשר המשתתפות ייקבעו.','The market opens once the teams are confirmed.')}</p>}
+  </article>;
+}
 
-      {line.is_unlocked && line.odds ? (
-        <div className="p-6 md:p-8 space-y-6">
-          {line.odds.series_winner && (
-            <div className="space-y-3 bg-amber-500/5 p-4 rounded-2xl border border-amber-500/10">
-              <h4 className="text-[10px] font-bold text-amber-500/70 uppercase tracking-widest text-center">To Win Series</h4>
-              <div className="flex gap-3">
-                <button onClick={() => {setSelectedBet({ type: "series_winner", target: line.team1, value: null, odds: line.odds.series_winner[line.team1] }); setCardError('');}} className={getBtnStyle("series_winner", line.team1)}>
-                  <span className="block text-[11px] font-bold text-gray-400 truncate">{line.team1}</span>
-                  <span className="block text-xl font-black text-amber-400 mt-1">{line.odds.series_winner[line.team1]}</span>
-                </button>
-                <button onClick={() => {setSelectedBet({ type: "series_winner", target: line.team2, value: null, odds: line.odds.series_winner[line.team2] }); setCardError('');}} className={getBtnStyle("series_winner", line.team2)}>
-                  <span className="block text-[11px] font-bold text-gray-400 truncate">{line.team2}</span>
-                  <span className="block text-xl font-black text-amber-400 mt-1">{line.odds.series_winner[line.team2]}</span>
-                </button>
-              </div>
-            </div>
-          )}
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div className="space-y-3">
-              <h4 className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Game Moneyline</h4>
-              <div className="flex gap-3">
-                <button onClick={() => {setSelectedBet({ type: "moneyline", target: line.team1, value: null, odds: line.odds.moneyline[line.team1] }); setCardError('');}} className={getBtnStyle("moneyline", line.team1)}>
-                  <span className="block text-[11px] font-bold text-gray-400 truncate">{line.team1}</span>
-                  <span className="block text-xl font-black text-blue-400 mt-1">{line.odds.moneyline[line.team1]}</span>
-                </button>
-                <button onClick={() => {setSelectedBet({ type: "moneyline", target: line.team2, value: null, odds: line.odds.moneyline[line.team2] }); setCardError('');}} className={getBtnStyle("moneyline", line.team2)}>
-                  <span className="block text-[11px] font-bold text-gray-400 truncate">{line.team2}</span>
-                  <span className="block text-xl font-black text-blue-400 mt-1">{line.odds.moneyline[line.team2]}</span>
-                </button>
-              </div>
-            </div>
-            <div className="space-y-3">
-              <h4 className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Total Points ({line.odds.over_under_points.line})</h4>
-              <div className="flex gap-3">
-                <button onClick={() => {setSelectedBet({ type: "over_under_points", target: "Over", value: line.odds.over_under_points.line, odds: line.odds.over_under_points.over_odds }); setCardError('');}} className={getBtnStyle("over_under_points", "Over")}>
-                  <span className="block text-xs font-bold text-gray-400">Over</span>
-                  <span className="block text-xl font-black text-emerald-400 mt-1">{line.odds.over_under_points.over_odds}</span>
-                </button>
-                <button onClick={() => {setSelectedBet({ type: "over_under_points", target: "Under", value: line.odds.over_under_points.line, odds: line.odds.over_under_points.under_odds }); setCardError('');}} className={getBtnStyle("over_under_points", "Under")}>
-                  <span className="block text-xs font-bold text-gray-400">Under</span>
-                  <span className="block text-xl font-black text-red-400 mt-1">{line.odds.over_under_points.under_odds}</span>
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {cardError && <div className="text-red-400 text-xs font-bold bg-red-500/10 p-3 rounded-lg border border-red-500/20 text-center">{cardError}</div>}
-
-          <div className="flex flex-col md:flex-row gap-3 pt-4 border-t border-white/5">
-            <div className="flex-[1.2] bg-black/50 border border-white/10 rounded-2xl px-4 py-2 flex items-center focus-within:border-amber-500/50 transition-colors">
-              <span className="text-amber-500/50 font-black mr-2">$</span>
-              <input type="number" placeholder="Wager" value={localBetAmount} disabled={isBankrupt} onChange={(e) => {setLocalBetAmount(Number(e.target.value)); setCardError('');}} className="w-full bg-transparent text-white font-black text-lg outline-none" />
-            </div>
-            <button onClick={handleConfirmBet} disabled={isPlacing || isBankrupt} className="flex-1 bg-gradient-to-r from-blue-600 to-indigo-800 text-white font-black py-3 rounded-2xl uppercase text-[10px]">
-              Place Bet
-            </button>
-            <button onClick={handleSimulateClick} className="flex-1 bg-white/5 hover:bg-white/10 text-white font-black py-3 rounded-2xl uppercase text-[10px]">
-              Simulate
-            </button>
-            <button onClick={handleSimulateSeriesClick} className="flex-1 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 font-black py-3 rounded-2xl uppercase text-[10px] border border-amber-500/20">
-              Auto Series
-            </button>
-          </div>
-        </div>
-      ) : (
-        <div className="p-16 text-center bg-black/20"><h4 className="text-xs font-bold text-gray-600 uppercase tracking-widest">Series Locked</h4></div>
-      )}
-    </div>
-  );
-};
+function DashboardLoading() {
+  const {t} = useLanguage();
+  return <Shell><div className="td-dashboard"><header className="td-title-row"><h1>{t('שווקי הפלייאוף','Playoff markets')}</h1></header><div className="td-loading" role="status" aria-label={t('טוענים סדרות ויחסים','Loading series and odds')}><p>{t('טוענים סדרות ויחסים…','Loading series and odds…')}</p><div className="td-skeleton-row"><div/><div/></div></div></div></Shell>;
+}
 
 export default function Dashboard() {
+  const {t} = useLanguage();
   const router = useRouter();
-  const [user, setUser] = useState<any>(null);
-  const [bettingLines, setBettingLines] = useState<any[]>([]);
-  const [futuresLines, setFuturesLines] = useState<any[]>([]);
-  const [selectedFutureTeam, setSelectedFutureTeam] = useState('');
-  const [futureWager, setFutureWager] = useState<number | ''>('');
-  const [activeRound, setActiveRound] = useState(1);
-  const [loading, setLoading] = useState(true);
-  const [message, setMessage] = useState('');
+  const {data,error,loading,refresh} = useProtected(loadDashboard);
+  const lock = useRef(false), lastAttempt = useRef<{fingerprint:string;requestId:string}|null>(null);
+  const [busy,setBusy] = useState(false), [actionError,setActionError] = useState(''), [message,setMessage] = useState('');
+  const [team,setTeam] = useState(''), [wager,setWager] = useState(''), [confirmReset,setConfirmReset] = useState(false);
+  const [conference,setConference] = useState<Conference>('all');
 
-  const refreshData = async (userId: string) => {
+  async function mutate(path:string,body:Record<string,unknown>,success?:string):Promise<void> {
+    if (lock.current) throw new Error('פעולה אחרת עדיין מתבצעת');
+    const fingerprint = JSON.stringify({path,body,tournament:data?.lines.tournament_id});
+    const requestId = lastAttempt.current?.fingerprint === fingerprint ? lastAttempt.current.requestId : crypto.randomUUID();
+    lastAttempt.current = {fingerprint,requestId};lock.current = true;setBusy(true);setActionError('');setMessage('');
     try {
-      const userRes = await fetch(`http://127.0.0.1:8000/api/user/${userId}`);
-      const userData = await userRes.json();
-      setUser({ id: userId, ...userData });
-
-      const linesRes = await fetch('http://127.0.0.1:8000/api/betting-lines');
-      const linesData = await linesRes.json();
-      setBettingLines(linesData.betting_lines);
-      setActiveRound(linesData.active_round);
-
-      const futuresRes = await fetch('http://127.0.0.1:8000/api/futures-lines');
-      const futuresData = await futuresRes.json();
-      setFuturesLines(futuresData.futures_lines);
-    } catch (err) { console.error(err); }
+      const result = await api(path,record,{...body,request_id:requestId},path === '/simulate-tournament-auto' ? 120000 : 30000);
+      lastAttempt.current = null;
+      const game = result.game_result && typeof result.game_result === 'object' ? record(result.game_result) : null;
+      setMessage(game && typeof game.winner === 'string' ? `מנצחת המשחק: ${game.winner} · ${game.t1_pts}–${game.t2_pts}` : success ?? 'הסימולציה הושלמה. התוצאות עודכנו.');
+      await refresh();
+    } catch(e) {
+      if (e instanceof ApiError && e.status > 0) lastAttempt.current = null;
+      if (e instanceof ApiError && e.status === 401) router.replace('/login');
+      if (e instanceof ApiError && e.status === 409) await refresh();
+      setActionError(messageOf(e));throw e;
+    } finally {lock.current = false;setBusy(false);}
+  }
+  const place:Place = async (matchup,game_number,selection,amount) => {
+    await mutate('/place-bet',{matchup,game_number,bet_type:selection.type,team_bet_on:selection.target,target_value:selection.value,odds:selection.odds,amount},`התחזית נקלטה · זכייה אפשרית ${money(amount*selection.odds)}`);
   };
-
-  useEffect(() => {
-    const userId = localStorage.getItem('userId');
-    if (!userId) { router.push('/login'); return; }
-    refreshData(userId).then(() => setLoading(false));
-  }, [router]);
-
-  const placeBet = async (matchup: string, game_number: number, bet_type: string, team_bet_on: string, target_value: number | null, odds: number, amount: number) => {
-    if (!user?.id) return;
+  async function futureSubmit(event:React.FormEvent) {
+    event.preventDefault();if (!data || busy) return;
     try {
-      const res = await fetch('http://127.0.0.1:8000/api/place-bet', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_id: Number(user.id), matchup, game_number, bet_type, team_bet_on, target_value, amount, odds }),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setMessage(`Bet Confirmed! Potential Payout: $${(amount * odds).toFixed(2)}`);
-        setUser((prev: any) => ({ ...prev, balance: data.new_balance }));
-        setTimeout(() => setMessage(''), 4000);
-      } else {
-        const errorMsg = Array.isArray(data.detail) ? data.detail.map((err: any) => `${err.msg}`).join(' | ') : data.detail;
-        alert(`Error: ${errorMsg}`);
-      }
-    } catch (err) { alert("Failed to place bet."); }
-  };
+      const selected = data.futures.find(future => future.team === team);
+      if (!selected) throw new Error('יש לבחור קבוצה');
+      await place('NBA Finals',0,{type:'futures_champion',target:team,value:null,odds:selected.odds},wagerValue(wager,data.user.balance));
+      setTeam('');setWager('');
+    } catch(e) {setActionError(messageOf(e));}
+  }
+  if (loading) return <DashboardLoading/>;
+  if (!data) return <Shell><div className="td-dashboard"><LoadError message={error} retry={() => void refresh()}/></div></Shell>;
 
-  const handlePlaceFutureBet = () => {
-    if (!selectedFutureTeam || !futureWager || Number(futureWager) <= 0) {
-      alert("Please select a team and enter a valid amount.");
-      return;
-    }
-    const selectedObj = futuresLines.find(f => f.team === selectedFutureTeam);
-    if (!selectedObj) return;
-    placeBet("NBA Finals", 0, "futures_champion", selectedFutureTeam, null, selectedObj.odds, Number(futureWager));
-    setFutureWager('');
-    setSelectedFutureTeam('');
-  };
-
-  const simulateGame = async (matchup: string, game_number: number, team1: string, team2: string) => {
-    try {
-      const res = await fetch('http://127.0.0.1:8000/api/simulate-game', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ matchup, game_number, team1, team2 }),
-      });
-      if (res.ok) { refreshData(user.id); }
-    } catch (err) { alert("Simulation failed."); }
-  };
-
-  const simulateSeriesAuto = async (matchup: string, team1: string, team2: string) => {
-    try {
-      const res = await fetch('http://127.0.0.1:8000/api/simulate-series-auto', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ matchup, team1, team2 }),
-      });
-      if (res.ok) { refreshData(user.id); }
-    } catch (err) { alert("Series simulation failed."); }
-  };
-
-  const simulateTournamentAuto = async () => {
-    try {
-      const res = await fetch('http://127.0.0.1:8000/api/simulate-tournament-auto', { method: 'POST' });
-      if (res.ok) { refreshData(user.id); alert("Tournament Simulation Completed Successfully!"); }
-    } catch (err) { alert("Tournament simulation failed."); }
-  };
-
-  const resetTournament = async () => {
-    try {
-      const res = await fetch('http://127.0.0.1:8000/api/reset-tournament', { method: 'POST' });
-      if (res.ok) {
-        refreshData(user.id);
-        setMessage("Tournament Reset! Good luck in the new season.");
-        setTimeout(() => setMessage(''), 4000);
-      }
-    } catch (err) { alert("Failed to reset tournament."); }
-  };
-
-  // פונקציית משיכת כספי חילוץ (Bailout) כשיש דולר אחד או פחות
-  const handleClaimBailout = async () => {
-    if (!user?.id) return;
-    try {
-      const res = await fetch('http://127.0.0.1:8000/api/reload-bank', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_id: Number(user.id) }),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setUser((prev: any) => ({ ...prev, balance: data.new_balance }));
-        setMessage("Bailout approved! +$1,000 transferred from bank.");
-        setTimeout(() => setMessage(''), 4000);
-      } else {
-        alert(data.detail || "Bailout rejected.");
-      }
-    } catch (err) { alert("Bank service communication error."); }
-  };
-
-  const handleLogout = () => {
-    localStorage.removeItem('userId');
-    router.push('/login');
-  };
-
-  if (loading) return (
-    <div className="min-h-screen bg-[#050505] flex items-center justify-center">
-      <div className="w-16 h-16 border-4 border-amber-500 border-t-transparent rounded-full animate-spin"></div>
+  const {user,lines,futures} = data;
+  const groups:{key:Conference;label:string;items:Line[]}[] = [
+    {key:'all',label:t('הכול','All'),items:lines.betting_lines},
+    {key:'west',label:t('מערב','West'),items:lines.betting_lines.filter(line => line.series_id.startsWith('West'))},
+    {key:'east',label:t('מזרח','East'),items:lines.betting_lines.filter(line => line.series_id.startsWith('East'))},
+    {key:'finals',label:t('גמר','Finals'),items:lines.betting_lines.filter(line => line.series_id === 'NBA Finals')},
+  ];
+  const visible = groups.find(group => group.key === conference)!.items;
+  const rounds = [t('סיבוב ראשון','First round'),t('חצי גמר אזורי','Conference semifinals'),t('גמר אזורי','Conference finals'),t('גמר NBA','NBA Finals')];
+  const round = lines.champion ? t('הטורניר הושלם','Tournament complete') : rounds[lines.active_round-1] ?? t('פלייאוף','Playoffs');
+  const selectedFuture = futures.find(future => future.team === team);
+  return <Shell user={user}><div className="td-dashboard">
+    <header className="td-title-row"><div><h1>{t('שווקי הפלייאוף','Playoff markets')}</h1><p>{round}<span>·</span>{t('עונה','Season')} #{lines.tournament_id}<span>·</span>{lines.betting_lines.length} {t('סדרות פתוחות','open series')}</p></div><button type="button" className="button ghost" disabled={busy} onClick={() => void refresh()}>{t('רענון יחסים','Refresh odds')}</button></header>
+    {error && <Notice error>{error}</Notice>}{actionError && <Notice error>{actionError}</Notice>}{message && <Notice>{message}</Notice>}
+    <div className="td-workspace">
+      <section className="td-markets" aria-label={t('משחקים זמינים להימור','Available games to bet')}>
+        <div className="td-conference-filters" role="group" aria-label={t('סינון לפי אזור','Filter by conference')}>{groups.map(group => <button type="button" key={group.key} aria-pressed={conference === group.key} className={conference === group.key ? 'td-active-filter' : ''} onClick={() => setConference(group.key)}>{group.label}<span>{group.items.length}</span></button>)}</div>
+        {visible.length ? <div className="td-match-grid">{visible.map((line,index) => <GameCard key={`${lines.tournament_id}:${line.series_id}:${line.next_game_number}`} line={line} user={user} busy={busy} place={place} simulate={mutate} featured={index === 0}/>)}</div> : <div className="td-market-empty"><h2>{lines.champion ? t('האלופה נקבעה','The champion is decided') : t('אין סדרות פתוחות באזור הזה','No open series in this conference')}</h2><p>{lines.champion ?? t('סדרות חדשות נפתחות כשהסיבוב הקודם מסתיים.','New series open when the previous round ends.')}</p>{conference !== 'all' && <button className="button ghost" onClick={() => setConference('all')}>{t('כל הסדרות','All series')}</button>}{lines.champion && <Link className="text-link" href="/bracket">{t('תוצאות הטורניר','Tournament results')}</Link>}</div>}
+      </section>
+      <aside className="td-rail" aria-label={t('אליפות וניהול טורניר','Championship and tournament controls')}>
+        <section className="td-side-panel"><h2>{t('אלופת NBA','NBA champion')}</h2>{lines.champion ? <div className="td-champion"><p>{t('האלופה בעונה הזאת','This season’s champion')}</p><strong dir="auto">{lines.champion}</strong><Link className="text-link" href="/history">{t('לבדיקת ההימורים','Review your bets')}</Link></div> : <form onSubmit={futureSubmit} className="td-future-form" aria-busy={busy}><label htmlFor="td-future-team">{t('קבוצה לאליפות','Championship pick')}<select id="td-future-team" value={team} onChange={event => setTeam(event.target.value)} disabled={busy} required><option value="">{t('בחירת קבוצה','Select a team')}</option>{futures.map(future => <option key={future.team} value={future.team}>{future.team} · {future.odds.toFixed(2)}</option>)}</select></label><div className="td-bet-row"><label htmlFor="td-future-amount">{t('סכום מדומה ($)','Virtual wager ($)')}<input id="td-future-amount" type="number" min="0.01" max={user.balance} step="0.01" inputMode="decimal" value={wager} onChange={event => setWager(event.target.value)} placeholder="0.00" disabled={busy} required/></label><button className="td-submit" disabled={busy || user.balance <= 0}>{t('שליחת הימור','Place bet')}</button></div><p className="td-return">{selectedFuture ? <>{t('יחס נבחר','Selected odds')} <strong dir="ltr">{selectedFuture.odds.toFixed(2)}</strong></> : t('שוק האליפות נסגר בהכרעת הטורניר.','The championship market closes when the tournament is decided.')}</p></form>}</section>
+        <section className="td-side-panel td-tournament-controls"><h2>{t('הרצת הטורניר','Tournament simulation')}</h2><p>{t('משחקים בודדים משאירים את ההחלטה הבאה בידיים שלך. הרצה מלאה מכריעה את כל הסדרות.','Individual games leave the next decision to you. A full simulation settles every series.')}</p><button className="button ghost" disabled={busy || !!lines.champion} onClick={() => void mutate('/simulate-tournament-auto',{}).catch(() => {})}>{busy ? t('מריצים…','Simulating…') : t('הרצת כל הפלייאוף','Simulate playoffs')}</button></section>
+        <section className="td-side-panel td-season-controls"><h2>{t('העונה והיתרה','Season and balance')}</h2><button type="button" disabled={busy || user.balance > 1} onClick={() => void mutate('/reload-bank',{},'נוספו $1,000 מדומים ליתרה').catch(() => {})}>{t('קבלת $1,000 מדומים','Claim $1,000 virtual funds')}</button><small>{t('זמין ביתרה של $1 או פחות, בכפוף לזמן המתנה.','Available at a balance of $1 or less, subject to a waiting period.')}</small><button type="button" disabled={busy} onClick={() => setConfirmReset(true)}>{t('פתיחת עונה חדשה','Start new season')}</button><small>{t('הימורים פתוחים יוחזרו. ההיסטוריה נשמרת.','Open bets will be refunded. Your history is preserved.')}</small></section>
+        <p className="td-data-note">{t('כסף מדומה בלבד. נתונים היסטוריים שנשמרו בפרויקט; אין תוצאות חיות או דירוג רשמי.','Virtual funds only. Historical project data, not live results or official standings.')}{lines.data_source.toLowerCase().includes('fallback') && <> {t('כרגע מופעלים נתוני גיבוי מדומים.','Simulated fallback data is currently in use.')}</>}</p>
+      </aside>
     </div>
-  );
-
-  const roundNames = ["Quarterfinals", "Semifinals", "Conference Finals", "NBA Finals"];
-  const isBailoutEligible = user?.balance !== undefined && user.balance <= 1.0;
-
-  const half = Math.ceil(bettingLines.length / 2);
-  const westGames = bettingLines.slice(0, half);
-  const eastGames = bettingLines.slice(half);
-
-  return (
-    <div className="min-h-screen bg-[#050505] font-sans text-gray-200 pb-24 selection:bg-amber-500/30">
-      <nav className="sticky top-0 z-50 bg-[#050505]/70 backdrop-blur-xl border-b border-white/5 shadow-2xl">
-        <div className="max-w-7xl mx-auto px-6 py-4 flex justify-between items-center">
-          <div className="flex items-center gap-4">
-            <div className="h-10 w-10 bg-gradient-to-br from-blue-600 to-indigo-900 rounded-xl flex items-center justify-center"><span className="text-white font-black text-xl">N</span></div>
-            <h1 className="text-xl font-black tracking-tighter text-white hidden sm:block">PLAYOFF<span className="text-amber-500">PREDICT</span></h1>
-          </div>
-          <div className="flex items-center gap-6">
-            <button onClick={() => router.push('/bracket')} className="text-xs font-bold text-amber-500 hover:text-amber-400 transition-colors uppercase border border-amber-500/20 px-3 py-1.5 rounded-lg bg-amber-500/5">Tournament Bracket</button>
-            <button onClick={() => router.push('/history')} className="text-xs font-bold text-gray-400 hover:text-white transition-colors uppercase">History</button>
-
-            {/* כפתור ה-Bailout המבוקש המשתנה לפי היתרה */}
-            <button
-              onClick={handleClaimBailout}
-              disabled={!isBailoutEligible}
-              className={`text-[10px] font-black uppercase px-4 py-2 rounded-xl transition-all border ${
-                isBailoutEligible
-                  ? 'bg-gradient-to-r from-emerald-500 to-teal-600 text-black border-emerald-400 animate-pulse shadow-lg shadow-emerald-500/20 hover:scale-105'
-                  : 'bg-gray-900 text-gray-600 border-gray-800/60 cursor-not-allowed opacity-40'
-              }`}
-            >
-              {isBailoutEligible ? "Claim $1,000 Bailout" : "Bank Locked"}
-            </button>
-
-            <div className="flex flex-col items-end">
-              <span className="text-[10px] font-bold text-gray-500 uppercase">Wallet</span>
-              <span className={`text-2xl font-black tabular-nums tracking-tight ${user?.balance <= 1.0 ? 'text-red-500' : 'text-emerald-400'}`}>
-                ${user?.balance.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-              </span>
-            </div>
-          </div>
-        </div>
-      </nav>
-
-      <main className="max-w-7xl mx-auto mt-8 px-4 sm:px-6">
-
-        <div className="bg-gradient-to-b from-amber-500/10 via-transparent to-transparent border border-amber-500/20 rounded-3xl p-6 mb-12 shadow-2xl space-y-4">
-          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-white/5 pb-4">
-            <div>
-              <h3 className="text-lg font-black text-amber-400 uppercase tracking-wider">NBA Finals Champion Futures</h3>
-              <p className="text-xs text-gray-400">Lock your prediction for the final championship crown or execute an instant tournament macro run.</p>
-            </div>
-            <button onClick={simulateTournamentAuto} className="w-full sm:w-auto bg-gradient-to-r from-amber-500 to-amber-700 hover:from-amber-400 hover:to-amber-600 text-black font-black px-6 py-3 rounded-2xl text-xs uppercase tracking-wider transition-transform active:scale-95 shadow-lg shadow-amber-500/10">
-              ⚡ Simulate Entire Tournament
-            </button>
-          </div>
-
-          <div className="flex flex-col md:flex-row gap-4 items-center">
-            <select value={selectedFutureTeam} onChange={(e) => setSelectedFutureTeam(e.target.value)} className="w-full md:flex-1 bg-black/60 border border-white/10 rounded-2xl p-4 text-white font-bold outline-none focus:border-amber-500">
-              <option value="">-- Choose Playoff Champion --</option>
-              {futuresLines.map(f => (
-                <option key={f.team} value={f.team}>{f.team} (Odds: {f.odds})</option>
-              ))}
-            </select>
-            <div className="w-full md:w-48 bg-black/60 border border-white/10 rounded-2xl px-4 py-3 flex items-center focus-within:border-amber-500">
-              <span className="text-amber-500 font-bold mr-2">$</span>
-              <input type="number" placeholder="Wager" value={futureWager} onChange={(e) => setFutureWager(Number(e.target.value))} className="w-full bg-transparent text-white font-black text-lg outline-none" />
-            </div>
-            <button onClick={handlePlaceFutureBet} className="w-full md:w-44 bg-white text-black font-black py-4 rounded-2xl text-xs uppercase transition-all hover:bg-gray-200">
-              Place Future Bet
-            </button>
-          </div>
-        </div>
-
-        <div className="text-center mb-12">
-          <h2 className="text-4xl md:text-6xl font-black text-white uppercase tracking-tighter">{roundNames[activeRound - 1]}</h2>
-          <p className="text-amber-500 text-[10px] tracking-[0.3em] font-bold uppercase mt-1">Live Betting Lines</p>
-        </div>
-
-        {message && <div className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 px-6 py-4 rounded-2xl mb-10 text-center font-bold">{message}</div>}
-
-        {bettingLines.length === 0 ? (
-          <div className="p-16 md:p-24 text-center bg-white/[0.02] rounded-3xl border border-white/5 shadow-2xl">
-            <h3 className="text-2xl font-black text-amber-500 uppercase tracking-widest mb-4">Tournament Complete</h3>
-            <p className="text-gray-400 text-sm mb-10">All series have concluded. Check the Bracket to view the Champion!</p>
-            <button onClick={resetTournament} className="bg-gradient-to-r from-amber-500 to-amber-700 hover:from-amber-400 hover:to-amber-600 text-black font-black px-10 py-5 rounded-2xl uppercase tracking-wider shadow-lg shadow-amber-500/20 transition-transform active:scale-95">
-               🔄 Start New Playoffs Season
-            </button>
-            <p className="text-[10px] text-gray-500 mt-4 tracking-widest uppercase">* Your wallet balance and betting history will be saved.</p>
-          </div>
-        ) : (
-          <div className="flex flex-col lg:flex-row gap-12 w-full">
-            <div className="flex-1 space-y-6">
-              <div className="flex items-center justify-center gap-3 mb-6"><div className="h-[2px] w-12 bg-gradient-to-r from-transparent to-red-500"></div><h3 className="text-sm font-black text-red-500 uppercase tracking-widest">Western Conference</h3><div className="h-[2px] w-12 bg-gradient-to-l from-transparent to-red-500"></div></div>
-              {westGames.map((line) => <GameCard key={line.series_id} line={line} userBalance={user?.balance || 0} onPlaceBet={placeBet} onSimulate={simulateGame} onSimulateSeries={simulateSeriesAuto} isBankrupt={user?.balance <= 1.0} />)}
-            </div>
-            <div className="flex-1 space-y-6">
-              <div className="flex items-center justify-center gap-3 mb-6"><div className="h-[2px] w-12 bg-gradient-to-r from-transparent to-blue-500"></div><h3 className="text-sm font-black text-blue-500 uppercase tracking-widest">Eastern Conference</h3><div className="h-[2px] w-12 bg-gradient-to-l from-transparent to-blue-500"></div></div>
-              {eastGames.map((line) => <GameCard key={line.series_id} line={line} userBalance={user?.balance || 0} onPlaceBet={placeBet} onSimulate={simulateGame} onSimulateSeries={simulateSeriesAuto} isBankrupt={user?.balance <= 1.0} />)}
-            </div>
-          </div>
-        )}
-      </main>
-    </div>
-  );
+    {confirmReset && <ConfirmDialog busy={busy} cancel={() => setConfirmReset(false)} confirm={() => void mutate('/reset-tournament',{},'העונה החדשה מוכנה. בהצלחה!').then(() => setConfirmReset(false)).catch(() => {})}/>}
+  </div></Shell>;
 }

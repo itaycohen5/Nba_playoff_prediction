@@ -1,11 +1,5 @@
-CREATE TABLE nba_games (
-    game_date DATE,
-    team VARCHAR(100),
-    opponent VARCHAR(100),
-    offensive_rating FLOAT,
-    defensive_rating FLOAT,
-    pace FLOAT,
-    rest_days INT,
-    home_game INT,
-    win INT
-);
+-- The historical nba_games table is unrelated to the current application.
+-- Current schema is generated from backend/db/models.py by python init_db.py.
+-- Legacy databases must be exported non-destructively using:
+-- python scripts/migrate_legacy.py old.db new.db
+-- Do not run DROP/CREATE over an existing database.

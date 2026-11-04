@@ -1,501 +1,543 @@
+"""Authenticated, transaction-safe personal NBA simulation API."""
+import hashlib
+import json
+import logging
+import math
 import os
-import sys
 import re
-import random
-from pathlib import Path
-from datetime import datetime, timezone
-from typing import Optional
-from google import genai
-from fastapi import FastAPI, HTTPException, Depends
+import secrets
+from collections import Counter
+from contextlib import asynccontextmanager
+from datetime import timedelta
+from decimal import Decimal, ROUND_HALF_UP
+from typing import Literal
+from uuid import UUID, uuid4
+
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
-from dotenv import load_dotenv
 
-# --- הגדרת נתיב ברור לתיקיית הנתונים ---
-BASE_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = BASE_DIR / "data"
-sys.path.append(str(BASE_DIR))
-
-from backend.playoff_engine import PlayoffEngine
-from backend.db.database import get_db, engine, Base
-from backend.db.models import User, Bet, GameHistory
 from backend.db.auth import get_password_hash, verify_password
+from backend.db.database import get_db, initialize_database
+from backend.db.models import AuthSession, Bet, GameHistory, LoginAttempt, Mutation, Tournament, User, utcnow
+from backend.playoff_engine import PlayoffEngine
 
-Base.metadata.create_all(bind=engine)
+logger = logging.getLogger(__name__)
+engine_nba = PlayoffEngine()
+COOKIE = 'nba_session'
+COOKIE_SECURE = os.getenv('COOKIE_SECURE', 'false').lower() == 'true'
+ORIGINS = [s.strip().rstrip('/') for s in os.getenv('APP_ORIGINS', 'http://localhost:3000,http://127.0.0.1:3000').split(',') if s.strip()]
 
-load_dotenv(dotenv_path=BASE_DIR / '.env')
+@asynccontextmanager
+async def lifespan(_app):
+    initialize_database()
+    yield
 
-API_KEY = os.getenv("GEMINI_API_KEY")
-client = genai.Client(api_key=API_KEY) if API_KEY else None
+app = FastAPI(title='Playoff Predict — סימולטור אישי', lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=ORIGINS, allow_credentials=True,
+                   allow_methods=['GET', 'POST'], allow_headers=['Content-Type'])
 
-app = FastAPI(title="NBA 2026 Enterprise Sportsbook API")
+@app.middleware('http')
+async def origin_guard(request: Request, call_next):
+    if request.method not in ('GET', 'HEAD', 'OPTIONS'):
+        origin = request.headers.get('origin')
+        if (origin and origin.rstrip('/') not in ORIGINS) or request.headers.get('sec-fetch-site') == 'cross-site':
+            return JSONResponse({'detail': 'מקור הבקשה אינו מורשה'}, status_code=403)
+    response = await call_next(request)
+    response.headers['Cache-Control'] = 'no-store'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    return response
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["*"],
-    expose_headers=["*"],
-)
+@app.exception_handler(OperationalError)
+async def database_busy(_request, _error):
+    return JSONResponse({'detail': 'מסד הנתונים עסוק או אינו זמין. נסו שוב באותה בקשה.'}, status_code=503,
+                        headers={'Retry-After': '2'})
 
-engine_nba = PlayoffEngine(data_path=DATA_DIR)
+@app.exception_handler(IntegrityError)
+async def constraint_conflict(_request, _error):
+    return JSONResponse({'detail': 'המצב השתנה. רעננו ונסו שוב.'}, status_code=409)
+
+class StrictModel(BaseModel):
+    model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
+
+class LoginRequest(StrictModel):
+    username: str = Field(min_length=1, max_length=40)
+    password: str = Field(min_length=1, max_length=72)
+    @field_validator('username')
+    @classmethod
+    def trim_username(cls, value):
+        value = value.strip()
+        if not value:
+            raise ValueError('יש להזין שם משתמש')
+        return value
+    @field_validator('password')
+    @classmethod
+    def password_bytes(cls, value):
+        if len(value.encode('utf-8')) > 72:
+            raise ValueError('סיסמה מוגבלת ל־72 בתים בקידוד UTF-8')
+        return value
+
+class RegisterRequest(LoginRequest):
+    username: str = Field(min_length=3, max_length=40)
+    password: str = Field(min_length=8, max_length=72)
+    @field_validator('username')
+    @classmethod
+    def valid_username(cls, value):
+        if len(value) < 3 or not re.fullmatch(r'\w+', value, re.UNICODE):
+            raise ValueError('שם משתמש: 3–40 אותיות, ספרות או קו תחתון')
+        return value
+
+class ActionRequest(StrictModel):
+    request_id: UUID = Field(default_factory=uuid4)
+    user_id: int | None = None
+
+class PlaceBetRequest(ActionRequest):
+    matchup: str = Field(min_length=1, max_length=80)
+    game_number: int = Field(ge=0, le=7, strict=True)
+    bet_type: Literal['moneyline', 'spread', 'over_under_points', 'series_winner', 'futures_champion']
+    team_bet_on: str = Field(min_length=1, max_length=80)
+    target_value: float | None = None
+    amount: Decimal = Field(gt=0, le=Decimal('1000000000'), max_digits=12, decimal_places=2)
+    odds: float | None = Field(default=None, ge=1, le=1000000)
+
+class SeriesRequest(ActionRequest):
+    matchup: str = Field(min_length=1, max_length=80)
+    team1: str | None = None
+    team2: str | None = None
+
+class GameRequest(SeriesRequest):
+    game_number: int = Field(ge=1, le=7, strict=True)
+
+# Compatibility names are imports only; identity is always the session owner.
+SimulateGameRequest = GameRequest
+SimulateSeriesAutoRequest = SeriesRequest
+ReloadBankRequest = ActionRequest
 
 
-# --- Schemas ---
-class UserAuth(BaseModel):
-    username: str
-    password: str
+def current_user(request: Request, db: Session = Depends(get_db)):
+    token = request.cookies.get(COOKIE)
+    auth = db.get(AuthSession, hashlib.sha256(token.encode()).hexdigest()) if token else None
+    if auth is None or auth.expires_at <= utcnow():
+        raise HTTPException(401, 'יש להתחבר מחדש')
+    user = db.query(User).filter(User.id == auth.user_id).with_for_update().first()
+    if user is None:
+        raise HTTPException(401, 'המשתמש אינו זמין')
+    return user
 
 
-class PlaceBetRequest(BaseModel):
-    user_id: int
-    matchup: str
-    game_number: int
-    bet_type: str
-    team_bet_on: str
-    target_value: Optional[float] = None
-    amount: float
-    odds: float
+def wallet(user):
+    return {'id': user.id, 'user_id': user.id, 'username': user.username, 'balance': user.balance_cents / 100}
 
 
-class SimulateGameRequest(BaseModel):
-    matchup: str
-    game_number: int
-    team1: str
-    team2: str
+def issue_session(db, user, response):
+    token = secrets.token_urlsafe(32)
+    db.query(AuthSession).filter(AuthSession.expires_at <= utcnow()).delete(synchronize_session=False)
+    db.add(AuthSession(token_hash=hashlib.sha256(token.encode()).hexdigest(), user_id=user.id,
+                       expires_at=utcnow() + timedelta(hours=8)))
+    response.set_cookie(COOKIE, token, max_age=8 * 3600, httponly=True, secure=COOKIE_SECURE,
+                        samesite='strict', path='/api')
 
 
-class SimulateSeriesAutoRequest(BaseModel):
-    matchup: str
-    team1: str
-    team2: str
+def identity(req, user):
+    if req.user_id is not None and req.user_id != user.id:
+        raise HTTPException(403, 'לא ניתן לבצע פעולה בשם משתמש אחר')
 
 
-class ReloadBankRequest(BaseModel):
-    user_id: int
+def fingerprint(action, req):
+    body = req.model_dump(mode='json', exclude={'request_id'})
+    return hashlib.sha256(json.dumps([action, body], sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
 
-# --- Dynamic Round & Bracket Manager ---
-def get_round_matchups(db: Session):
+def replay(db, user, req, action):
+    identity(req, user)
+    digest = fingerprint(action, req)
+    previous = db.query(Mutation).filter_by(user_id=user.id, request_id=str(req.request_id)).first()
+    if previous:
+        if previous.fingerprint != digest:
+            raise HTTPException(409, 'מזהה הבקשה כבר שימש לפעולה אחרת')
+        return json.loads(previous.response_json), digest
+    return None, digest
+
+
+def finish(db, user, req, digest, result):
+    db.add(Mutation(user_id=user.id, request_id=str(req.request_id), fingerprint=digest,
+                    response_json=json.dumps(result, ensure_ascii=False)))
+    db.commit()
+    return result
+
+
+def active_tournament(db, user):
+    tournament = db.query(Tournament).filter_by(owner_id=user.id, status='active').first()
+    if tournament is None:
+        tournament = Tournament(owner_id=user.id)
+        db.add(tournament)
+        db.flush()
+    return tournament
+
+
+def series_games(db, tournament, sid):
+    return db.query(GameHistory).filter_by(tournament_id=tournament.id, series_id=sid).order_by(GameHistory.game_number, GameHistory.id).all()
+
+
+def winner_of(games, t1, t2):
+    if not t1 or not t2:
+        return None
+    counts = Counter(g.winner for g in games)
+    return t1 if counts[t1] >= 4 else t2 if counts[t2] >= 4 else None
+
+
+def bracket_state(db, tournament):
+    histories = db.query(GameHistory).filter_by(tournament_id=tournament.id).order_by(GameHistory.game_number, GameHistory.id).all()
+    by_series = {}
+    for game in histories:
+        by_series.setdefault(game.series_id, []).append(game)
     wt, et = engine_nba.west_teams, engine_nba.east_teams
-    r1_matches = [
-        ("West 1 vs 8", wt[1], wt[8]), ("West 4 vs 5", wt[4], wt[5]),
-        ("West 3 vs 6", wt[3], wt[6]), ("West 2 vs 7", wt[2], wt[7]),
-        ("East 1 vs 8", et[1], et[8]), ("East 4 vs 5", et[4], et[5]),
-        ("East 3 vs 6", et[3], et[6]), ("East 2 vs 7", et[2], et[7]),
-    ]
-
-    r1_winners = {}
-    for sid, t1, t2 in r1_matches:
-        games = db.query(GameHistory).filter(GameHistory.series_id == sid).all()
-        w1 = sum(1 for g in games if g.winner == t1)
-        w2 = sum(1 for g in games if g.winner == t2)
-        if w1 == 4:
-            r1_winners[sid] = t1
-        elif w2 == 4:
-            r1_winners[sid] = t2
-
-    if len(r1_winners) < 8:
-        return 1, r1_matches
-
-    r2_matches = [
-        ("West Semi 1", r1_winners.get("West 1 vs 8"), r1_winners.get("West 4 vs 5")),
-        ("West Semi 2", r1_winners.get("West 3 vs 6"), r1_winners.get("West 2 vs 7")),
-        ("East Semi 1", r1_winners.get("East 1 vs 8"), r1_winners.get("East 4 vs 5")),
-        ("East Semi 2", r1_winners.get("East 3 vs 6"), r1_winners.get("East 2 vs 7")),
-    ]
-
-    r2_winners = {}
-    for sid, t1, t2 in r2_matches:
-        if not t1 or not t2: continue
-        games = db.query(GameHistory).filter(GameHistory.series_id == sid).all()
-        w1 = sum(1 for g in games if g.winner == t1)
-        w2 = sum(1 for g in games if g.winner == t2)
-        if w1 == 4:
-            r2_winners[sid] = t1
-        elif w2 == 4:
-            r2_winners[sid] = t2
-
-    if len(r2_winners) < 4:
-        return 2, r2_matches
-
-    r3_matches = [
-        ("West Finals", r2_winners.get("West Semi 1"), r2_winners.get("West Semi 2")),
-        ("East Finals", r2_winners.get("East Semi 1"), r2_winners.get("East Semi 2")),
-    ]
-
-    r3_winners = {}
-    for sid, t1, t2 in r3_matches:
-        if not t1 or not t2: continue
-        games = db.query(GameHistory).filter(GameHistory.series_id == sid).all()
-        w1 = sum(1 for g in games if g.winner == t1)
-        w2 = sum(1 for g in games if g.winner == t2)
-        if w1 == 4:
-            r3_winners[sid] = t1
-        elif w2 == 4:
-            r3_winners[sid] = t2
-
-    if len(r3_winners) < 2:
-        return 3, r3_matches
-
-    r4_matches = [("NBA Finals", r3_winners.get("West Finals"), r3_winners.get("East Finals"))]
-    return 4, r4_matches
+    seeds = [(1, 8), (4, 5), (3, 6), (2, 7)]
+    rounds = [[(f'{side} {a} vs {b}', teams[a], teams[b]) for side, teams in [('West', wt), ('East', et)] for a, b in seeds]]
+    winners = lambda matches: [winner_of(by_series.get(sid, []), a, b) for sid, a, b in matches]
+    r1 = winners(rounds[0])
+    rounds.append([(f'{side} Semi {i+1}', r1[offset + i*2], r1[offset + i*2 + 1]) for side, offset in [('West', 0), ('East', 4)] for i in range(2)])
+    r2 = winners(rounds[1])
+    rounds.append([('West Finals', r2[0], r2[1]), ('East Finals', r2[2], r2[3])])
+    r3 = winners(rounds[2])
+    rounds.append([('NBA Finals', r3[0], r3[1])])
+    champion = winner_of(by_series.get('NBA Finals', []), *r3)
+    active = next((i for i, matches in enumerate(rounds, 1) if not all(winners(matches))), 4)
+    return active, rounds, by_series, champion
 
 
-# --- Endpoints ---
-@app.get("/api/futures-lines")
-def get_futures_lines(db: Session = Depends(get_db)):
-    wt = list(engine_nba.west_teams.values())
-    et = list(engine_nba.east_teams.values())
-    all_teams = wt + et
-    lines = []
-    for team in all_teams:
-        stats = engine_nba.team_db.get(team, {'CUM_WIN_PCT': 0.5})
-        pct = stats['CUM_WIN_PCT']
-        odds = round((1 / (pct ** 2.5)) * 1.8, 2)
-        lines.append({"team": team, "odds": odds})
-    return {"futures_lines": lines}
+def get_round_matchups(db, tournament):
+    active, rounds, _, _ = bracket_state(db, tournament)
+    return active, rounds[active - 1]
 
 
-@app.post("/api/register")
-def register(user: UserAuth, db: Session = Depends(get_db)):
-    existing_user = db.query(User).filter(User.username == user.username).first()
-    if existing_user:
-        raise HTTPException(status_code=400, detail="Username already registered")
-    hashed_pw = get_password_hash(user.password)
-    new_user = User(username=user.username, hashed_password=hashed_pw, balance=1000.0)
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-    return {"message": "User created successfully", "user_id": new_user.id, "balance": new_user.balance}
+def require_matchup(db, tournament, req):
+    round_number, matches = get_round_matchups(db, tournament)
+    match = next((m for m in matches if m[0] == req.matchup), None)
+    if not match or not match[1] or not match[2]:
+        raise HTTPException(409, 'הסדרה אינה פעילה')
+    _, t1, t2 = match
+    if ((getattr(req, 'team1', None) is not None and req.team1 != t1)
+            or (getattr(req, 'team2', None) is not None and req.team2 != t2)):
+        raise HTTPException(422, 'הקבוצות אינן תואמות לסדרה')
+    games = series_games(db, tournament, req.matchup)
+    if winner_of(games, t1, t2):
+        raise HTTPException(409, 'הסדרה כבר הסתיימה')
+    if len(games) >= 7 or [g.game_number for g in games] != list(range(1, len(games) + 1)):
+        raise HTTPException(409, 'היסטוריית הסדרה אינה תקינה')
+    return round_number, t1, t2, games
 
 
-@app.post("/api/login")
-def login(user: UserAuth, db: Session = Depends(get_db)):
-    db_user = db.query(User).filter(User.username == user.username).first()
-    if not db_user or not verify_password(user.password, db_user.hashed_password):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    return {"message": "Success", "user_id": db_user.id, "balance": db_user.balance}
+def futures_quotes(db, tournament):
+    _, rounds, by_series, champion = bracket_state(db, tournament)
+    if champion:
+        return []
+    alive = set(engine_nba.west_teams.values()) | set(engine_nba.east_teams.values())
+    for matches in rounds:
+        for sid, t1, t2 in matches:
+            winner = winner_of(by_series.get(sid, []), t1, t2)
+            if winner:
+                alive.discard(t2 if winner == t1 else t1)
+    weights = {t: max(.01, float(engine_nba.team_db[t]['CUM_WIN_PCT'])) ** 2.5 for t in alive}
+    total = sum(weights.values())
+    return [{'team': t, 'odds': max(1.01, round(.95 * total / weights[t], 2))} for t in sorted(alive)]
 
 
-@app.get("/api/user/{user_id}")
-def get_user(user_id: int, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.id == user_id).first()
-    return {"balance": user.balance, "username": user.username}
-
-
-# --- תיקון אכיפת חילוץ מהבנק: דולר אחד או פחות בלבד ---
-@app.post("/api/deposit")
-@app.post("/api/reload-bank")
-def reload_bank(req: ReloadBankRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.id == req.user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found.")
-
-    if user.balance > 1.0:
-        raise HTTPException(status_code=400, detail="Bailout denied. Wallet has more than $1.00.")
-
-    # התיקון: מייצרים זמן נוכחי ומסירים ממנו את אזור הזמן כדי שיתאים ל-SQLite
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
-
-    if user.last_reload:
-        # מוודאים שגם הזמן מהדאטה-בייס נקי מאזור זמן
-        last_reload_naive = user.last_reload.replace(tzinfo=None)
-        if (now - last_reload_naive).total_seconds() < 10:
-            remaining = int(10 - (now - last_reload_naive).total_seconds())
-            raise HTTPException(status_code=429, detail=f"Wait {remaining} seconds.")
-
-    user.balance += 1000.0
-    user.last_reload = now
-    db.commit()
-    return {"message": "Reloaded", "new_balance": user.balance}
-
-@app.get("/api/betting-lines")
-def get_betting_lines(db: Session = Depends(get_db)):
-    current_round, matchups = get_round_matchups(db)
-    lines = []
-    for series_id, t1, t2 in matchups:
-        if not t1 or not t2: continue
-        games = db.query(GameHistory).filter(GameHistory.series_id == series_id).all()
-        w1 = sum(1 for g in games if g.winner == t1)
-        w2 = sum(1 for g in games if g.winner == t2)
-        if w1 == 4 or w2 == 4: continue
-        next_game = len(games) + 1
-        is_game_unlocked = (next_game <= 4) or (min(w2 + 4, w1 + 4) >= next_game)
-        odds = engine_nba.calculate_advanced_odds(t1, t2, series_history=games)
-        lines.append({
-            "series_id": series_id, "current_round": current_round,
-            "team1": t1, "team2": t2, "series_score": f"{w1} - {w2}",
-            "next_game_number": next_game, "is_unlocked": is_game_unlocked, "odds": odds if is_game_unlocked else None
-        })
-    return {"active_round": current_round, "betting_lines": lines}
-
-
-@app.post("/api/place-bet")
-def place_bet(req: PlaceBetRequest, db: Session = Depends(get_db)):
-    try:
-        current_user_id = int(req.user_id)
-    except (ValueError, TypeError):
-        raise HTTPException(status_code=400, detail="Invalid user ID format.")
-    if req.amount <= 0:
-        raise HTTPException(status_code=400, detail="Amount must be positive.")
-    user = db.query(User).filter(User.id == current_user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found.")
-    if user.balance < req.amount:
-        raise HTTPException(status_code=400, detail="Insufficient funds.")
-
-    user.balance -= req.amount
-    new_bet = Bet(
-        user_id=current_user_id, matchup=req.matchup, game_number=req.game_number,
-        bet_type=req.bet_type, team_bet_on=req.team_bet_on, target_value=req.target_value,
-        amount=req.amount, odds=req.odds, potential_win=req.amount * req.odds, status="pending"
-    )
-    db.add(new_bet)
-    db.commit()
-    return {"message": "Bet placed successfully", "new_balance": user.balance}
-
-
-def resolve_game_bets(db: Session, matchup: str, game_number: int, stats: dict, team1: str, team2: str):
-    pending_bets = db.query(Bet).filter(Bet.matchup == matchup, Bet.game_number == game_number,
-                                        Bet.status == "pending").all()
-    for bet in pending_bets:
-        user = db.query(User).filter(User.id == bet.user_id).first()
-        if not user: continue
-        if bet.bet_type == "moneyline":
-            if bet.team_bet_on == stats["winner"]:
-                bet.status = "won"
-                user.balance += bet.potential_win
-            else:
-                bet.status = "lost"
-        elif bet.bet_type == "spread":
-            margin = stats["t1_pts"] - stats["t2_pts"] if bet.team_bet_on == team1 else stats["t2_pts"] - stats[
-                "t1_pts"]
-            if margin + (bet.target_value or 0) > 0:
-                bet.status = "won"
-                user.balance += bet.potential_win
-            elif margin + (bet.target_value or 0) == 0:
-                bet.status = "push"
-                user.balance += bet.amount
-            else:
-                bet.status = "lost"
-        elif bet.bet_type == "over_under_points":
-            total = stats["total_points"]
-            if total == bet.target_value:
-                bet.status = "push"
-                user.balance += bet.amount
-            elif (bet.team_bet_on == "Over" and total > bet.target_value) or (
-                    bet.team_bet_on == "Under" and total < bet.target_value):
-                bet.status = "won"
-                user.balance += bet.potential_win
-            else:
-                bet.status = "lost"
-
-
-@app.post("/api/simulate-game")
-def simulate_single_game(req: SimulateGameRequest, db: Session = Depends(get_db)):
-    games = db.query(GameHistory).filter(GameHistory.series_id == req.matchup).all()
-    w1 = sum(1 for g in games if g.winner == req.team1)
-    w2 = sum(1 for g in games if g.winner == req.team2)
-    if w1 == 4 or w2 == 4:
-        raise HTTPException(status_code=400, detail="Series already finished.")
+def quote_bet(db, tournament, req):
+    if req.bet_type == 'futures_champion':
+        if req.matchup != 'NBA Finals' or req.game_number != 0:
+            raise HTTPException(422, 'הימור אליפות דורש שוק אליפות ומספר משחק 0')
+        quote = next((q for q in futures_quotes(db, tournament) if q['team'] == req.team_bet_on), None)
+        if not quote:
+            raise HTTPException(409, 'שוק האליפות סגור או שהקבוצה הודחה')
+        return quote['odds'], None
+    _, t1, t2, games = require_matchup(db, tournament, req)
     if req.game_number != len(games) + 1:
-        raise HTTPException(status_code=400, detail=f"Sequence error.")
+        raise HTTPException(409, 'ניתן להמר רק על המשחק הבא שטרם שוחק')
+    odds = engine_nba.calculate_advanced_odds(t1, t2, series_history=games)
+    if req.bet_type in ('moneyline', 'series_winner'):
+        if req.team_bet_on not in (t1, t2):
+            raise HTTPException(422, 'יש לבחור קבוצה שמשתתפת בסדרה')
+        return odds[req.bet_type][req.team_bet_on], None
+    if req.bet_type == 'spread':
+        if req.team_bet_on not in (t1, t2):
+            raise HTTPException(422, 'קבוצה לא תקינה')
+        key = 'team1_spread' if req.team_bet_on == t1 else 'team2_spread'
+        return odds['spread']['odds'], odds['spread'][key]
+    if req.team_bet_on not in ('Over', 'Under'):
+        raise HTTPException(422, 'יש לבחור מעל או מתחת לקו')
+    return odds['over_under_points']['over_odds' if req.team_bet_on == 'Over' else 'under_odds'], odds['over_under_points']['line']
 
-    stats = engine_nba.generate_game_stats(req.team1, req.team2, series_history=games)
-    current_round, _ = get_round_matchups(db)
-    history = GameHistory(
-        series_id=req.matchup, round_number=current_round, game_number=req.game_number,
-        team1=req.team1, team2=req.team2, team1_pts=stats["t1_pts"], team2_pts=stats["t2_pts"], winner=stats["winner"]
-    )
-    db.add(history)
-    resolve_game_bets(db, req.matchup, req.game_number, stats, req.team1, req.team2)
 
-    final_w1 = w1 + (1 if stats["winner"] == req.team1 else 0)
-    final_w2 = w2 + (1 if stats["winner"] == req.team2 else 0)
-    if final_w1 == 4 or final_w2 == 4:
-        series_champ = req.team1 if final_w1 == 4 else req.team2
-        series_bets = db.query(Bet).filter(Bet.matchup == req.matchup, Bet.bet_type == "series_winner",
-                                           Bet.status == "pending").all()
-        for s_bet in series_bets:
-            s_user = db.query(User).filter(User.id == s_bet.user_id).first()
-            if s_user:
-                s_bet.status = "won" if s_bet.team_bet_on == series_champ else "lost"
-                if s_bet.status == "won": s_user.balance += s_bet.potential_win
+def pay_bet(user, bet, status):
+    if bet.status != 'pending':
+        return
+    bet.status = status
+    paid = bet.potential_win_cents if status == 'won' else bet.amount_cents if status in ('push', 'cancelled') else 0
+    bet.paid_out_cents = paid
+    user.balance_cents += paid
 
-        if req.matchup == "NBA Finals":
-            futures = db.query(Bet).filter(Bet.bet_type == "futures_champion", Bet.status == "pending").all()
-            for f_bet in futures:
-                f_user = db.query(User).filter(User.id == f_bet.user_id).first()
-                if f_user:
-                    f_bet.status = "won" if f_bet.team_bet_on == series_champ else "lost"
-                    if f_bet.status == "won": f_user.balance += f_bet.potential_win
+
+def simulate_one(db, user, tournament, sid, expected_game=None):
+    req = SeriesRequest(matchup=sid)
+    round_number, t1, t2, games = require_matchup(db, tournament, req)
+    number = len(games) + 1
+    if expected_game is not None and expected_game != number:
+        raise HTTPException(409, 'מספר המשחק השתנה. רעננו את הנתונים')
+    stats = engine_nba.generate_game_stats(t1, t2, series_history=games)
+    if (stats['winner'] not in (t1, t2) or stats['t1_pts'] == stats['t2_pts']
+            or stats['winner'] != (t1 if stats['t1_pts'] > stats['t2_pts'] else t2)):
+        raise RuntimeError('Simulation produced an invalid result')
+    game = GameHistory(tournament_id=tournament.id, series_id=sid, round_number=round_number,
+                       game_number=number, team1=t1, team2=t2, team1_pts=stats['t1_pts'],
+                       team2_pts=stats['t2_pts'], winner=stats['winner'],
+                       team1_rebounds=stats['t1_rebounds'], team2_rebounds=stats['t2_rebounds'])
+    db.add(game)
+    db.flush()  # bounded loops see the new game before the next iteration
+    series_champion = winner_of([*games, game], t1, t2)
+    pending = db.query(Bet).filter_by(tournament_id=tournament.id, user_id=user.id, status='pending').all()
+    for bet in pending:
+        if bet.bet_type == 'futures_champion':
+            if sid == 'NBA Finals' and series_champion:
+                pay_bet(user, bet, 'won' if bet.team_bet_on == series_champion else 'lost')
+        elif bet.matchup == sid and bet.bet_type == 'series_winner':
+            if series_champion:
+                pay_bet(user, bet, 'won' if bet.team_bet_on == series_champion else 'lost')
+        elif bet.matchup == sid and bet.game_number == number:
+            if bet.bet_type == 'moneyline':
+                status = 'won' if bet.team_bet_on == stats['winner'] else 'lost'
+            elif bet.bet_type == 'spread':
+                margin = stats['t1_pts'] - stats['t2_pts']
+                adjusted = (margin if bet.team_bet_on == t1 else -margin) + bet.target_value
+                status = 'push' if adjusted == 0 else 'won' if adjusted > 0 else 'lost'
+            else:
+                difference = stats['total_points'] - bet.target_value
+                status = 'push' if difference == 0 else 'won' if ((difference > 0) == (bet.team_bet_on == 'Over')) else 'lost'
+            pay_bet(user, bet, status)
+    db.flush()
+    return {**stats, 'series_id': sid, 'game_number': number}
+
+@app.get('/api/health')
+def health():
+    return {'status': 'ok', 'data_source': getattr(engine_nba, 'data_source', 'season snapshot')}
+
+@app.post('/api/register', status_code=201)
+def register(req: RegisterRequest, response: Response, db: Session = Depends(get_db)):
+    if db.query(User).filter_by(username=req.username).first():
+        raise HTTPException(409, 'שם המשתמש כבר קיים')
+    user = User(username=req.username, hashed_password=get_password_hash(req.password), balance_cents=100000)
+    db.add(user)
+    db.flush()
+    db.add(Tournament(owner_id=user.id))
+    issue_session(db, user, response)
     db.commit()
-    return {"game_result": stats, "message": "Settled"}
+    return wallet(user)
 
+@app.post('/api/login')
+def login(req: LoginRequest, response: Response, request: Request, db: Session = Depends(get_db)):
+    key = hashlib.sha256(f'{request.client.host if request.client else "local"}:{req.username}'.encode()).hexdigest()
+    attempt = db.query(LoginAttempt).filter_by(key=key).with_for_update().first()
+    now = utcnow()
+    if attempt and (now - attempt.window_start).total_seconds() >= 900:
+        attempt.failures, attempt.window_start = 0, now
+    if attempt and attempt.failures >= 10:
+        raise HTTPException(429, 'יותר מדי ניסיונות. נסו שוב בעוד 15 דקות', headers={'Retry-After': '900'})
+    user = db.query(User).filter_by(username=req.username).with_for_update().first()
+    if not user or not verify_password(req.password, user.hashed_password):
+        if attempt is None:
+            attempt = LoginAttempt(key=key, failures=0, window_start=now)
+            db.add(attempt)
+        attempt.failures += 1
+        db.commit()
+        raise HTTPException(401, 'שם המשתמש או הסיסמה שגויים')
+    if attempt:
+        attempt.failures = 0
+    issue_session(db, user, response)
+    db.commit()
+    return wallet(user)
 
-@app.post("/api/simulate-series-auto")
-def simulate_series_auto(req: SimulateSeriesAutoRequest, db: Session = Depends(get_db)):
-    while True:
-        games = db.query(GameHistory).filter(GameHistory.series_id == req.matchup).all()
-        w1 = sum(1 for g in games if g.winner == req.team1)
-        w2 = sum(1 for g in games if g.winner == req.team2)
-        if w1 == 4 or w2 == 4: break
-        next_game = len(games) + 1
-        stats = engine_nba.generate_game_stats(req.team1, req.team2, series_history=games)
-        current_round, _ = get_round_matchups(db)
-        history = GameHistory(
-            series_id=req.matchup, round_number=current_round, game_number=next_game,
-            team1=req.team1, team2=req.team2, team1_pts=stats["t1_pts"], team2_pts=stats["t2_pts"],
-            winner=stats["winner"]
-        )
-        db.add(history)
-        resolve_game_bets(db, req.matchup, next_game, stats, req.team1, req.team2)
+@app.post('/api/logout')
+def logout(request: Request, response: Response, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    token = request.cookies.get(COOKIE, '')
+    db.query(AuthSession).filter_by(token_hash=hashlib.sha256(token.encode()).hexdigest(), user_id=user.id).delete()
+    db.commit()
+    response.delete_cookie(COOKIE, path='/api', secure=COOKIE_SECURE, httponly=True, samesite='strict')
+    return {'message': 'התנתקת בהצלחה'}
 
-        if w1 + (1 if stats["winner"] == req.team1 else 0) == 4 or w2 + (1 if stats["winner"] == req.team2 else 0) == 4:
-            champ = req.team1 if w1 + (1 if stats["winner"] == req.team1 else 0) == 4 else req.team2
-            series_bets = db.query(Bet).filter(Bet.matchup == req.matchup, Bet.bet_type == "series_winner",
-                                               Bet.status == "pending").all()
-            for s_bet in series_bets:
-                s_user = db.query(User).filter(User.id == s_bet.user_id).first()
-                if s_user:
-                    s_bet.status = "won" if s_bet.team_bet_on == champ else "lost"
-                    if s_bet.status == "won": s_user.balance += s_bet.potential_win
+@app.get('/api/me')
+def me(user: User = Depends(current_user)):
+    return wallet(user)
 
-            if req.matchup == "NBA Finals":
-                futures = db.query(Bet).filter(Bet.bet_type == "futures_champion", Bet.status == "pending").all()
-                for f_bet in futures:
-                    f_user = db.query(User).filter(User.id == f_bet.user_id).first()
-                    if f_user:
-                        f_bet.status = "won" if f_bet.team_bet_on == champ else "lost"
-                        if f_bet.status == "won": f_user.balance += f_bet.potential_win
+@app.get('/api/user/{user_id}')
+def legacy_user(user_id: int, user: User = Depends(current_user)):
+    if user_id != user.id:
+        raise HTTPException(403, 'אין הרשאה למשתמש זה')
+    return wallet(user)
+
+@app.get('/api/betting-lines')
+def betting_lines(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    tournament = active_tournament(db, user)
+    active, rounds, by_series, champion = bracket_state(db, tournament)
+    lines = []
+    for sid, t1, t2 in rounds[active - 1]:
+        games = by_series.get(sid, [])
+        if not t1 or not t2 or winner_of(games, t1, t2):
+            continue
+        counts = Counter(g.winner for g in games)
+        lines.append({'series_id': sid, 'current_round': active, 'team1': t1, 'team2': t2,
+                      'series_score': f'{counts[t1]} - {counts[t2]}', 'next_game_number': len(games) + 1,
+                      'is_unlocked': True, 'conference': 'west' if sid.startswith('West ') else 'east' if sid.startswith('East ') else 'finals',
+                      'odds': engine_nba.calculate_advanced_odds(t1, t2, series_history=games)})
+    db.commit()
+    return {'active_round': active, 'betting_lines': lines, 'tournament_id': tournament.id, 'champion': champion,
+            'data_source': getattr(engine_nba, 'data_source', 'season snapshot')}
+
+@app.get('/api/futures-lines')
+def futures_lines(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    tournament = active_tournament(db, user)
+    lines = futures_quotes(db, tournament)
+    db.commit()
+    return {'futures_lines': lines}
+
+@app.post('/api/place-bet')
+def place_bet(req: PlaceBetRequest, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    previous, digest = replay(db, user, req, 'bet')
+    if previous is not None:
+        return previous
+    tournament = active_tournament(db, user)
+    odds, target = quote_bet(db, tournament, req)
+    if (req.odds is not None and not math.isclose(req.odds, odds, abs_tol=.004, rel_tol=0)) or (
+            req.target_value is not None and (target is None or not math.isclose(req.target_value, target, abs_tol=.0001, rel_tol=0))):
+        raise HTTPException(409, 'יחס ההימור או הקו השתנו. בחרו הצעה מעודכנת')
+    cents = int(req.amount * 100)
+    if user.balance_cents < cents:
+        raise HTTPException(400, 'אין מספיק יתרה מדומה')
+    payout = int((Decimal(cents) * Decimal(str(odds))).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
+    user.balance_cents -= cents
+    bet = Bet(user_id=user.id, tournament_id=tournament.id, request_id=str(req.request_id), request_fingerprint=digest,
+              matchup=req.matchup, game_number=req.game_number, bet_type=req.bet_type, team_bet_on=req.team_bet_on,
+              target_value=target, amount_cents=cents, odds=odds, potential_win_cents=payout)
+    db.add(bet)
+    db.flush()
+    return finish(db, user, req, digest, {'message': 'ההימור נקלט', 'bet_id': bet.id,
+                                        'new_balance': user.balance_cents / 100, 'potential_win': payout / 100})
+
+@app.post('/api/simulate-game')
+def simulate_single_game(req: GameRequest, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    previous, digest = replay(db, user, req, 'game')
+    if previous is not None:
+        return previous
+    tournament = active_tournament(db, user)
+    require_matchup(db, tournament, req)
+    result = simulate_one(db, user, tournament, req.matchup, req.game_number)
+    return finish(db, user, req, digest, {'game_result': result, 'message': 'המשחק הסתיים', 'new_balance': user.balance_cents / 100})
+
+@app.post('/api/simulate-series-auto')
+def simulate_series_auto(req: SeriesRequest, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    previous, digest = replay(db, user, req, 'series')
+    if previous is not None:
+        return previous
+    tournament = active_tournament(db, user)
+    _, t1, t2, _ = require_matchup(db, tournament, req)
+    results = []
+    for _ in range(7):
+        if winner_of(series_games(db, tournament, req.matchup), t1, t2):
             break
-    db.commit()
-    return {"message": "Series settled complete"}
+        results.append(simulate_one(db, user, tournament, req.matchup))
+    champion = winner_of(series_games(db, tournament, req.matchup), t1, t2)
+    if not champion:
+        raise HTTPException(409, 'הסדרה לא הגיעה להכרעה תקינה')
+    return finish(db, user, req, digest, {'completed': True, 'winner': champion, 'results': results,
+                                        'message': 'הסדרה הסתיימה', 'new_balance': user.balance_cents / 100})
 
-
-@app.post("/api/simulate-tournament-auto")
-def simulate_tournament_auto(db: Session = Depends(get_db)):
-    for _ in range(150):
-        current_round, matchups = get_round_matchups(db)
-        simulated_any = False
-        for series_id, t1, t2 in matchups:
-            if not t1 or not t2: continue
-            games = db.query(GameHistory).filter(GameHistory.series_id == series_id).all()
-            w1 = sum(1 for g in games if g.winner == t1)
-            w2 = sum(1 for g in games if g.winner == t2)
-            if w1 < 4 and w2 < 4:
-                next_game = len(games) + 1
-                stats = engine_nba.generate_game_stats(t1, t2, series_history=games)
-                history = GameHistory(
-                    series_id=series_id, round_number=current_round, game_number=next_game,
-                    team1=t1, team2=t2, team1_pts=stats["t1_pts"], team2_pts=stats["t2_pts"], winner=stats["winner"]
-                )
-                db.add(history)
-                resolve_game_bets(db, series_id, next_game, stats, t1, t2)
-
-                if w1 + (1 if stats["winner"] == t1 else 0) == 4 or w2 + (1 if stats["winner"] == t2 else 0) == 4:
-                    champ = t1 if w1 + (1 if stats["winner"] == t1 else 0) == 4 else t2
-                    series_bets = db.query(Bet).filter(Bet.matchup == series_id, Bet.bet_type == "series_winner",
-                                                       Bet.status == "pending").all()
-                    for s_bet in series_bets:
-                        s_user = db.query(User).filter(User.id == s_bet.user_id).first()
-                        if s_user:
-                            s_bet.status = "won" if s_bet.team_bet_on == champ else "lost"
-                            if s_bet.status == "won": s_user.balance += s_bet.potential_win
-
-                    if series_id == "NBA Finals":
-                        futures = db.query(Bet).filter(Bet.bet_type == "futures_champion",
-                                                       Bet.status == "pending").all()
-                        for f_bet in futures:
-                            f_user = db.query(User).filter(User.id == f_bet.user_id).first()
-                            if f_user:
-                                f_bet.status = "won" if f_bet.team_bet_on == champ else "lost"
-                                if f_bet.status == "won": f_user.balance += f_bet.potential_win
-                db.commit()
-                simulated_any = True
-                break
-        if not simulated_any:
+@app.post('/api/simulate-tournament-auto')
+def simulate_tournament_auto(req: ActionRequest | None = None, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    req = req or ActionRequest()
+    previous, digest = replay(db, user, req, 'tournament')
+    if previous is not None:
+        return previous
+    tournament = active_tournament(db, user)
+    results = []
+    for _ in range(105):
+        _, rounds, by_series, champion = bracket_state(db, tournament)
+        if champion:
             break
-    return {"message": "Tournament fully completed"}
+        active, matches = get_round_matchups(db, tournament)
+        match = next((m for m in matches if m[1] and m[2] and not winner_of(by_series.get(m[0], []), m[1], m[2])), None)
+        if not match:
+            raise HTTPException(409, 'הטורניר אינו יכול להתקדם')
+        results.append(simulate_one(db, user, tournament, match[0]))
+    _, _, _, champion = bracket_state(db, tournament)
+    if not champion:
+        raise HTTPException(409, 'הטורניר לא הושלם')
+    return finish(db, user, req, digest, {'completed': True, 'champion': champion, 'games_played': len(results),
+                                        'message': 'הטורניר הסתיים', 'new_balance': user.balance_cents / 100})
 
+@app.post('/api/reset-tournament')
+def reset_tournament(req: ActionRequest | None = None, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    req = req or ActionRequest()
+    previous, digest = replay(db, user, req, 'reset')
+    if previous is not None:
+        return previous
+    tournament = active_tournament(db, user)
+    pending = db.query(Bet).filter_by(tournament_id=tournament.id, user_id=user.id, status='pending').all()
+    refund = sum(b.amount_cents for b in pending)
+    for bet in pending:
+        pay_bet(user, bet, 'cancelled')
+    tournament.status = 'archived'
+    db.flush()
+    new_tournament = Tournament(owner_id=user.id)
+    db.add(new_tournament)
+    db.flush()
+    return finish(db, user, req, digest, {'message': 'נפתח טורניר חדש. ההיסטוריה נשמרה', 'tournament_id': new_tournament.id,
+                                        'refund': refund / 100, 'new_balance': user.balance_cents / 100})
 
-@app.post("/api/reset-tournament")
-def reset_tournament(db: Session = Depends(get_db)):
-    pending_bets = db.query(Bet).filter(Bet.status == "pending").all()
-    for bet in pending_bets:
-        user = db.query(User).filter(User.id == bet.user_id).first()
-        if user:
-            user.balance += bet.amount
-        bet.status = "cancelled"
-    db.query(GameHistory).delete()
+@app.post('/api/deposit')
+@app.post('/api/reload-bank')
+def reload_bank(req: ActionRequest | None = None, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    req = req or ActionRequest()
+    previous, digest = replay(db, user, req, 'reload')
+    if previous is not None:
+        return previous
+    if user.balance_cents > 100:
+        raise HTTPException(400, 'מילוי יתרה זמין ביתרה של דולר מדומה אחד או פחות')
+    if user.last_reload and (utcnow() - user.last_reload).total_seconds() < 10:
+        raise HTTPException(429, 'יש להמתין 10 שניות בין מילויים', headers={'Retry-After': '10'})
+    user.balance_cents += 100000
+    user.last_reload = utcnow()
+    return finish(db, user, req, digest, {'message': 'היתרה המדומה מולאה', 'new_balance': user.balance_cents / 100})
+
+@app.get('/api/tournament-status')
+def tournament_status(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    tournament = active_tournament(db, user)
+    active, rounds, by_series, champion = bracket_state(db, tournament)
+    def card(match):
+        sid, t1, t2 = match
+        counts = Counter(g.winner for g in by_series.get(sid, []))
+        return {'series_id': sid, 't1': {'name': t1 or 'TBD', 'wins': counts[t1]}, 't2': {'name': t2 or 'TBD', 'wins': counts[t2]}}
+    bracket = {side: {f'r{r}': [card(m) for m in rounds[r-1] if m[0].startswith(prefix)] for r in (1, 2, 3)} for side, prefix in [('west', 'West '), ('east', 'East ')]}
+    bracket.update({'finals': card(rounds[3][0]), 'champion': champion, 'active_round': active, 'tournament_id': tournament.id})
     db.commit()
-    return {"message": "Tournament reset successfully"}
-
-
-@app.get("/api/tournament-status")
-def get_tournament_status(db: Session = Depends(get_db)):
-    wt, et = engine_nba.west_teams, engine_nba.east_teams
-
-    def get_score(sid, default_t1, default_t2):
-        if not default_t1 or not default_t2:
-            return {"name": default_t1 or "TBD", "wins": 0}, {"name": default_t2 or "TBD", "wins": 0}
-        games = db.query(GameHistory).filter(GameHistory.series_id == sid).all()
-        w1 = sum(1 for g in games if g.winner == default_t1)
-        w2 = sum(1 for g in games if g.winner == default_t2)
-        return {"name": default_t1, "wins": w1}, {"name": default_t2, "wins": w2}
-
-    w_r1 = [("West 1 vs 8", wt[1], wt[8]), ("West 4 vs 5", wt[4], wt[5]), ("West 3 vs 6", wt[3], wt[6]),
-            ("West 2 vs 7", wt[2], wt[7])]
-    e_r1 = [("East 1 vs 8", et[1], et[8]), ("East 4 vs 5", et[4], et[5]), ("East 3 vs 6", et[3], et[6]),
-            ("East 2 vs 7", et[2], et[7])]
-    bracket = {"west": {"r1": [], "r2": [], "r3": []}, "east": {"r1": [], "r2": [], "r3": []}, "finals": {}}
-    w_r1_winners, e_r1_winners = [], []
-    for sid, t1, t2 in w_r1:
-        team1, team2 = get_score(sid, t1, t2)
-        bracket["west"]["r1"].append({"t1": team1, "t2": team2})
-        w_r1_winners.append(t1 if team1["wins"] == 4 else (t2 if team2["wins"] == 4 else None))
-    for sid, t1, t2 in e_r1:
-        team1, team2 = get_score(sid, t1, t2)
-        bracket["east"]["r1"].append({"t1": team1, "t2": team2})
-        e_r1_winners.append(t1 if team1["wins"] == 4 else (t2 if team2["wins"] == 4 else None))
-
-    w_r2 = [("West Semi 1", w_r1_winners[0], w_r1_winners[1]), ("West Semi 2", w_r1_winners[2], w_r1_winners[3])]
-    e_r2 = [("East Semi 1", e_r1_winners[0], e_r1_winners[1]), ("East Semi 2", e_r1_winners[2], e_r1_winners[3])]
-    w_r2_winners, e_r2_winners = [], []
-    for sid, t1, t2 in w_r2:
-        team1, team2 = get_score(sid, t1, t2)
-        bracket["west"]["r2"].append({"t1": team1, "t2": team2})
-        w_r2_winners.append(t1 if team1["wins"] == 4 else (t2 if team2["wins"] == 4 else None))
-    for sid, t1, t2 in e_r2:
-        team1, team2 = get_score(sid, t1, t2)
-        bracket["east"]["r2"].append({"t1": team1, "t2": team2})
-        e_r2_winners.append(t1 if team1["wins"] == 4 else (t2 if team2["wins"] == 4 else None))
-
-    t1, t2 = get_score("West Finals", w_r2_winners[0], w_r2_winners[1])
-    bracket["west"]["r3"].append({"t1": t1, "t2": t2})
-    w_champ = w_r2_winners[0] if t1["wins"] == 4 else (w_r2_winners[1] if t2["wins"] == 4 else None)
-
-    t1, t2 = get_score("East Finals", e_r2_winners[0], e_r2_winners[1])
-    bracket["east"]["r3"].append({"t1": t1, "t2": t2})
-    e_champ = e_r2_winners[0] if t1["wins"] == 4 else (e_r2_winners[1] if t2["wins"] == 4 else None)
-
-    f_t1, f_t2 = get_score("NBA Finals", w_champ, e_champ)
-    bracket["finals"] = {"t1": f_t1, "t2": f_t2}
     return bracket
 
+@app.get('/api/me/history')
+def history(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    bets = db.query(Bet).filter_by(user_id=user.id).order_by(Bet.id.desc()).all()
+    return {'history': [{'id': b.id, 'tournament_id': b.tournament_id, 'matchup': b.matchup,
+                         'game_number': b.game_number, 'bet_type': b.bet_type, 'team_bet_on': b.team_bet_on,
+                         'target_value': b.target_value, 'amount': b.amount_cents / 100, 'odds': b.odds,
+                         'potential_win': b.potential_win_cents / 100, 'paid_out': b.paid_out_cents / 100,
+                         'status': b.status, 'created_at': b.created_at.isoformat() + 'Z'} for b in bets]}
 
-@app.get("/api/user/{user_id}/history")
-def get_user_history(user_id: int, db: Session = Depends(get_db)):
-    bets = db.query(Bet).filter(Bet.user_id == user_id).order_by(Bet.id.desc()).all()
-    return {"history": [{"id": b.id, "matchup": b.matchup, "game_number": b.game_number, "bet_type": b.bet_type,
-                         "team_bet_on": b.team_bet_on, "amount": b.amount, "odds": b.odds, "status": b.status} for b in
-                        bets]}
+@app.get('/api/user/{user_id}/history')
+def legacy_history(user_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if user_id != user.id:
+        raise HTTPException(403, 'אין הרשאה למשתמש זה')
+    return history(user, db)
 
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     import uvicorn
-
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(app, host='127.0.0.1', port=8000)

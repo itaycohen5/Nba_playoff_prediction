@@ -1,0 +1,38 @@
+{
+  "series_id": "West 1 vs 8",
+  "current_round": 1,
+  "conference": "west",
+  "team1": "Oklahoma City Thunder",
+  "team2": "Phoenix Suns",
+  "series_score": "0 - 0",
+  "next_game_number": 1,
+  "odds": {
+    "moneyline": {
+      "Oklahoma City Thunder": 1.36,
+      "Phoenix Suns": 3.17
+    },
+    "series_winner": {
+      "Oklahoma City Thunder": 1.18,
+      "Phoenix Suns": 4.82
+    },
+    "spread": {
+      "team1_spread": -7.0,
+      "team2_spread": 7.0,
+      "odds": 1.9
+    },
+    "over_under_points": {
+      "line": 225.5,
+      "over_odds": 1.9,
+      "under_odds": 1.9
+    }
+  },
+  "model_probability": {
+    "Oklahoma City Thunder": 0.7001985767660966,
+    "Phoenix Suns": 0.29980142323390335
+  },
+  "source_note": "Historical season CSV; custom playoff model snapshot before game 1. Simulated credits only; no live NBA data or live market odds.",
+  "source_note_he": "צילום מצב של מודל המבוסס על נתוני עונה היסטוריים, לפני משחק 1 בתרחיש פלייאוף מותאם. נקודות מדומות בלבד; ללא נתוני NBA או יחסי הימורים בזמן אמת.",
+  "data_source": "Season CSV; statistical simulator; custom playoff scenario; defensive rating estimated",
+  "source_csv_sha256": "defb3220234f9f2128fbce70a87cea0c17d7165356491b1f7d87b89422f6f59f",
+  "payout_rounding": "ROUND_HALF_UP to whole cents; total return includes stake"
+}

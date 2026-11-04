@@ -1,5 +1,16 @@
-# created by virtualenv automatically
 .venv/
-.env
+node_modules/
+.next/
 __pycache__/
+.pytest_cache/
+*.pyc
+*.tsbuildinfo
+.env
+.env.local
 *.db
+*.db-*
+*.sqlite3
+*.sqlite3-*
+*.log
+.idea/
+.taste-skill/history.json

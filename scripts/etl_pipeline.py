@@ -1,77 +1,68 @@
+"""Prepare past-only differential features for optional offline model training."""
+import numpy as np
 import pandas as pd
-from pathlib import Path
+from pipeline_utils import BASE, atomic_csv, require_columns
 
-# הגדרת נתיב בסיס לפרויקט
-BASE = Path(__file__).resolve().parent.parent
-raw_data_path = BASE / 'data' / 'nba_real_games.csv'
-
-if not raw_data_path.exists():
-    raise FileNotFoundError("קובץ הדאטה הגולמי לא נמצא! הרץ קודם את fetch_nba_data.py")
-
-# טעינת הנתונים וסידור כרונולוגי
-gamelog = pd.read_csv(raw_data_path)
-gamelog['WIN'] = gamelog['WL'].map({'W': 1, 'L': 0})
-gamelog['GAME_DATE'] = pd.to_datetime(gamelog['GAME_DATE'])
-gamelog = gamelog.sort_values(by='GAME_DATE')
-
-print("Calculating Advanced Stats (Offensive Rating)...")
-# נוסחת פוזשנים מוערכת: FGA + 0.44 * FTA - OREB + TOV
-possessions = gamelog['FGA'] + 0.44 * gamelog['FTA'] - gamelog['OREB'] + gamelog['TOV']
-possessions = possessions.replace(0, 100) # מניעת חלוקה באפס במקרים קיצוניים
-gamelog['OFF_RATING'] = (gamelog['PTS'] / possessions) * 100
-
-# רשימת השדות הבסיסיים שנרצה לחשב להם ממוצע נע
-features = [
-    'MIN', 'FGM', 'FGA', 'FG_PCT', 'FG3M', 'FG3A', 'FG3_PCT',
-    'FTM', 'FTA', 'FT_PCT', 'OREB', 'DREB', 'REB',
-    'AST', 'STL', 'BLK', 'TOV', 'PF', 'PTS', 'PLUS_MINUS', 'OFF_RATING'
+FEATURES = [
+    "MIN", "FGM", "FGA", "FG_PCT", "FG3M", "FG3A", "FG3_PCT", "FTM", "FTA",
+    "FT_PCT", "OREB", "DREB", "REB", "AST", "STL", "BLK", "TOV", "PF", "PTS", "PLUS_MINUS",
 ]
 
-print("Calculating rolling stats, rest days, and cumulative win percentages...")
-team_perf = pd.DataFrame()
-team_perf['GAME_ID'] = gamelog['GAME_ID']
-team_perf['TEAM_ID'] = gamelog['TEAM_ID']
-team_perf['WIN'] = gamelog['WIN']
-team_perf['IS_HOME'] = gamelog['MATCHUP'].str.contains('vs.').astype(int)
 
-# א) חישוב ימי מנוחה (הפרש בימים מהמשחק הקודם פחות 1)
-team_perf['REST_DAYS'] = gamelog.groupby('TEAM_ID')['GAME_DATE'].diff().dt.days - 1
-team_perf['REST_DAYS'] = team_perf['REST_DAYS'].fillna(3) # ברירת מחדל לתחילת עונה
+def main():
+    gamelog = pd.read_csv(BASE / "data" / "nba_real_games.csv", dtype={"GAME_ID": str})
+    require_columns(gamelog, ["GAME_ID", "TEAM_ID", "GAME_DATE", "WL", "MATCHUP"] + FEATURES)
+    if gamelog.duplicated(["GAME_ID", "TEAM_ID"]).any():
+        raise ValueError("Duplicate team/game rows")
+    if not gamelog["WL"].isin(["W", "L"]).all() or gamelog["MATCHUP"].isna().any():
+        raise ValueError("Invalid outcomes or matchups")
+    gamelog["GAME_DATE"] = pd.to_datetime(gamelog["GAME_DATE"], errors="raise")
+    if gamelog["GAME_DATE"].isna().any():
+        raise ValueError("Missing game dates")
+    gamelog = gamelog.sort_values(["GAME_DATE", "GAME_ID", "TEAM_ID"]).reset_index(drop=True)
+    gamelog[FEATURES] = gamelog[FEATURES].apply(pd.to_numeric, errors="raise")
+    if not np.isfinite(gamelog[FEATURES].to_numpy()).all():
+        raise ValueError("Non-finite raw statistics")
+    possessions = gamelog["FGA"] + .44 * gamelog["FTA"] - gamelog["OREB"] + gamelog["TOV"]
+    if (possessions <= 0).any():
+        raise ValueError("Invalid possessions")
+    gamelog["OFF_RATING"] = gamelog["PTS"] / possessions * 100
+    gamelog["WIN"] = gamelog["WL"].map({"W": 1, "L": 0})
+    features = FEATURES + ["OFF_RATING"]
+    perf = gamelog[["GAME_ID", "GAME_DATE", "TEAM_ID", "WIN"]].copy()
+    perf["IS_HOME"] = gamelog["MATCHUP"].str.contains("vs.", regex=False).astype(int)
+    if not gamelog["MATCHUP"].str.contains("vs.", regex=False).where(
+            perf["IS_HOME"].eq(1), gamelog["MATCHUP"].str.contains("@", regex=False)).all():
+        raise ValueError("Cannot identify home/away matchup")
+    perf["REST_DAYS"] = gamelog.groupby("TEAM_ID")["GAME_DATE"].diff().dt.days.sub(1).fillna(3)
+    if (perf["REST_DAYS"] < 0).any():
+        raise ValueError("Multiple games for one team on the same date")
+    prior_wins = gamelog.groupby("TEAM_ID")["WIN"].transform(lambda wins: wins.cumsum().shift(1))
+    prior_games = gamelog.groupby("TEAM_ID").cumcount()
+    perf["CUM_WIN_PCT"] = prior_wins.div(prior_games.replace(0, np.nan)).fillna(.5)
+    for col in features:
+        perf["ROLL_" + col] = gamelog.groupby("TEAM_ID")[col].transform(
+            lambda values: values.shift(1).rolling(window=5, min_periods=1).mean())
+    home = perf[perf["IS_HOME"].eq(1)]
+    away = perf[perf["IS_HOME"].eq(0)]
+    matchups = home.merge(away, on="GAME_ID", suffixes=("_HOME", "_AWAY"), validate="one_to_one")
+    if len(matchups) != gamelog["GAME_ID"].nunique():
+        raise ValueError("Incomplete home/away pairs")
+    if not (matchups["WIN_HOME"] + matchups["WIN_AWAY"]).eq(1).all():
+        raise ValueError("Inconsistent paired outcomes")
+    result = matchups[["GAME_ID"]].copy()
+    result["GAME_DATE"] = matchups["GAME_DATE_HOME"]
+    result["WIN"] = matchups["WIN_HOME"]
+    result["REST_DIFF"] = matchups["REST_DAYS_HOME"] - matchups["REST_DAYS_AWAY"]
+    result["CUM_WIN_PCT_DIFF"] = matchups["CUM_WIN_PCT_HOME"] - matchups["CUM_WIN_PCT_AWAY"]
+    for col in features:
+        result[col + "_DIFF"] = matchups["ROLL_" + col + "_HOME"] - matchups["ROLL_" + col + "_AWAY"]
+    result = result.dropna().sort_values(["GAME_DATE", "GAME_ID"])
+    if result.empty:
+        raise ValueError("No complete historical features")
+    atomic_csv(result, BASE / "data" / "clean_real_nba_games.csv")
+    print(f"Saved {len(result)} chronological feature rows.")
 
-# ב) אחוז ניצחונות מצטבר של הקבוצה מתחילת העונה (לפני המשחק הנוכחי)
-shifted_win = gamelog.groupby('TEAM_ID')['WIN'].shift(1)
-cum_wins = shifted_win.groupby(gamelog['TEAM_ID']).cumsum()
-cum_games = shifted_win.groupby(gamelog['TEAM_ID']).cumcount()
-team_perf['CUM_WIN_PCT'] = cum_wins / cum_games
-team_perf['CUM_WIN_PCT'] = team_perf['CUM_WIN_PCT'].fillna(0.5)
 
-# ג) חישוב ממוצעים נעים (5 משחקים אחרונים שקדמו למשחק הנוכחי)
-shifted_stats = gamelog.groupby('TEAM_ID')[features].shift(1)
-rolling_stats = shifted_stats.groupby(gamelog['TEAM_ID']).rolling(window=5, min_periods=1).mean().reset_index(level=0, drop=True)
-
-for col in features:
-    team_perf[f'ROLL_{col}'] = rolling_stats[col]
-
-print("Merging matchups to create Differential Features (Home - Away)...")
-# פיצול המכונה לקבוצות הבית וקבוצות החוץ וחיבורן לפי מזהה משחק
-home_df = team_perf[team_perf['IS_HOME'] == 1].copy()
-away_df = team_perf[team_perf['IS_HOME'] == 0].copy()
-
-matchups = pd.merge(home_df, away_df, on='GAME_ID', suffixes=('_HOME', '_AWAY'))
-
-# יצירת דף הנתונים הסופי המבוסס על הפרשים בלבד
-diff_df = pd.DataFrame()
-diff_df['WIN'] = matchups['WIN_HOME'] # המטרה לניבוי: האם קבוצת הבית ניצחה?
-diff_df['REST_DIFF'] = matchups['REST_DAYS_HOME'] - matchups['REST_DAYS_AWAY']
-diff_df['CUM_WIN_PCT_DIFF'] = matchups['CUM_WIN_PCT_HOME'] - matchups['CUM_WIN_PCT_AWAY']
-
-for col in features:
-    diff_df[f'{col}_DIFF'] = matchups[f'ROLL_{col}_HOME'] - matchups[f'ROLL_{col}_AWAY']
-
-# מחיקת שורות חסרות מתחילת העונה
-diff_df = diff_df.dropna()
-
-output_path = BASE / 'data' / 'clean_real_nba_games.csv'
-diff_df.to_csv(output_path, index=False)
-
-print(f"Success! Advanced differential data saved to: {output_path}")
+if __name__ == "__main__":
+    main()

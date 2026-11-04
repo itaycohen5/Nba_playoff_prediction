@@ -1,14 +1,14 @@
 import bcrypt
 
 def get_password_hash(password: str) -> str:
-    # מקודד את הסיסמה ומייצר הצפנה (Hash) עם Salt מובנה
-    salt = bcrypt.gensalt()
-    hashed_password = bcrypt.hashpw(password.encode('utf-8'), salt)
-    return hashed_password.decode('utf-8')
+    encoded = password.encode('utf-8')
+    if not 1 <= len(encoded) <= 72:
+        raise ValueError('Password must contain 1–72 UTF-8 bytes')
+    return bcrypt.hashpw(encoded, bcrypt.gensalt()).decode('ascii')
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    # משווה בין הסיסמה שהוזנה עכשיו לבין מה ששמור בדאטה-בייס
-    return bcrypt.checkpw(
-        plain_password.encode('utf-8'),
-        hashed_password.encode('utf-8')
-    )
+    try:
+        encoded = plain_password.encode('utf-8')
+        return 0 < len(encoded) <= 72 and bcrypt.checkpw(encoded, hashed_password.encode('ascii'))
+    except (ValueError, TypeError, AttributeError, UnicodeError):
+        return False
