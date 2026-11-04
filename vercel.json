@@ -1,0 +1,24 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "backend": {
+      "root": ".",
+      "framework": "fastapi",
+      "entrypoint": "backend.api:app",
+      "functions": {
+        "backend/api.py": {
+          "maxDuration": 120,
+          "excludeFiles": "{web_client/**,tests/**,scripts/**,models/**,visualizations/**,.taste-skill/**,.idea/**,data/nba_real_games.csv,data/clean_real_nba_games.csv,*.db,*.sqlite3,.env*}"
+        }
+      }
+    },
+    "frontend": {
+      "root": "web_client",
+      "framework": "nextjs"
+    }
+  },
+  "rewrites": [
+    {"source": "/api/(.*)", "destination": {"service": "backend"}},
+    {"source": "/(.*)", "destination": {"service": "frontend"}}
+  ]
+}

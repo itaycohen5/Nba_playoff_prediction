@@ -28,7 +28,7 @@ from backend.playoff_engine import PlayoffEngine
 logger = logging.getLogger(__name__)
 engine_nba = PlayoffEngine()
 COOKIE = 'nba_session'
-COOKIE_SECURE = os.getenv('COOKIE_SECURE', 'false').lower() == 'true'
+COOKIE_SECURE = os.getenv('COOKIE_SECURE', 'true' if os.getenv('VERCEL') else 'false').lower() == 'true'
 ORIGINS = [s.strip().rstrip('/') for s in os.getenv('APP_ORIGINS', 'http://localhost:3000,http://127.0.0.1:3000').split(',') if s.strip()]
 
 @asynccontextmanager

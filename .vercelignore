@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+**/node_modules
+**/.next
+**/__pycache__
+**/.pytest_cache
+.idea
+.git
+*.db
+*.db-*
+*.sqlite3
+*.sqlite3-*
+*.log
+**/*.tsbuildinfo
+.taste-skill/history.json
