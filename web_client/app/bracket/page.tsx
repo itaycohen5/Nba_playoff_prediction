@@ -22,8 +22,23 @@ function Match({match}: {match: Matchup}) {
   </article>;
 }
 
+const rounds = [
+  {key: 'r1', he: 'סיבוב ראשון', en: 'First round'},
+  {key: 'r2', he: 'חצי גמר אזורי', en: 'Conference semifinals'},
+  {key: 'r3', he: 'גמר אזורי', en: 'Conference finals'},
+] as const;
+
+function Connectors() {
+  return <svg className="bracket-connectors" viewBox="0 0 700 400" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+    <path className="bracket-court" d="M350 0V400 M397 200a47 47 0 1 0-94 0 47 47 0 1 0 94 0 M0 108H112V292H0 M700 108H588V292H700"/>
+    <path className="bracket-west-lines" d="M50 50H100V150H50 M100 100H150 M50 250H100V350H50 M100 300H150 M150 100H200V300H150 M200 200H250"/>
+    <path className="bracket-east-lines" d="M650 50H600V150H650 M600 100H550 M650 250H600V350H650 M600 300H550 M550 100H500V300H550 M500 200H450"/>
+    <path className="bracket-final-lines" d="M250 200H450"/>
+  </svg>;
+}
+
 export default function BracketPage() {
-  const {t} = useLanguage();
+  const {t,locale} = useLanguage();
   const {data,error,loading,refresh} = useProtected(load);
   if (loading) return <Shell><Loading/></Shell>;
   if (!data) return <Shell><LoadError message={error} retry={() => void refresh()}/></Shell>;
@@ -31,20 +46,33 @@ export default function BracketPage() {
   return <Shell user={user}>
     <header className="app-title-row"><div><h1>{t('עץ הפלייאוף','Playoff bracket')}</h1><p>{t('ארבעה ניצחונות בסדרה כדי לעלות שלב. התוצאות שייכות לטורניר האישי שלך.','Four wins to advance. Results belong to your personal tournament.')}</p></div><button className="button ghost" onClick={() => void refresh()}>{t('רענון תוצאות','Refresh results')}</button></header>
     {error && <Notice error>{error}</Notice>}
-    <section className={`bracket-finals ${bracket.champion ? 'has-champion' : ''}`} aria-labelledby="finals-title">
-      <div className="bracket-finals-caption"><h2 id="finals-title">{bracket.champion ? t('אלופת הטורניר','Tournament champion') : t('גמר NBA','NBA Finals')}</h2>{bracket.champion ? <p className="bracket-champion" dir="auto">{bracket.champion}</p> : <p>{t('אלופת המערב מול אלופת המזרח','West champion versus East champion')}</p>}<Link className="text-link" href="/dashboard">{t('חזרה למגרש','Back to the court')}</Link></div>
-      <Match match={bracket.finals}/>
-    </section>
-    <div className="bracket-conferences">
-      {([{key:'west',title:t('המערב','Western Conference')},{key:'east',title:t('המזרח','Eastern Conference')}] as const).map(({key,title}) => <section className="bracket-conference" key={key} aria-labelledby={`conference-${key}`}>
-        <h2 id={`conference-${key}`}>{title}</h2>
-        <div className="bracket-scroll" tabIndex={0} role="region" aria-label={t(`שלבי ${title}. אפשר לגלול אופקית במסך קטן.`,`${title} rounds. Scroll horizontally on a small screen.`)}>
-          <div className="bracket-track">{([{key:'r1',title:t('סיבוב ראשון','First round')},{key:'r2',title:t('חצי גמר אזורי','Conference semifinals')},{key:'r3',title:t('גמר אזורי','Conference finals')}] as const).map(round => <div className={`bracket-round round-${round.key}`} key={round.key}>
-            <h3>{round.title}</h3>
-            <div className="round-matches">{bracket[key][round.key].map((match,index) => <Match key={index} match={match}/>)}</div>
-          </div>)}</div>
-        </div>
-      </section>)}
+    <div className="bracket-scroll-hint">
+      <span>{t('במסך צר אפשר לגלול לצדדים כדי לראות את כל העץ.','Scroll sideways on a narrow screen to see the whole bracket.')}</span>
+      <Link className="text-link" href="/dashboard">{t('חזרה למגרש','Back to the court')}</Link>
+    </div>
+    <div className="bracket-board" tabIndex={0} role="region" dir="ltr" aria-label={t('עץ הפלייאוף המלא, מערב, גמר ומזרח','Full playoff bracket, West, Finals and East')}>
+      <div className="bracket-stage">
+        <Connectors/>
+        {(['west', 'finals', 'east'] as const).map(side => {
+          const dir = locale === 'he' ? 'rtl' : 'ltr';
+          if (side === 'finals') return <section key={side} className="bracket-center" aria-labelledby="finals-title">
+            <h2 id="finals-title" dir={dir}>{t('גמר NBA','NBA Finals')}</h2>
+            <div className="bracket-center-match" dir={dir}>
+              <Match match={bracket.finals}/>
+              {bracket.champion && <p className="bracket-champion">{t('אלופה','Champion')} <bdi>{bracket.champion}</bdi></p>}
+            </div>
+          </section>;
+          return <section className={`bracket-wing bracket-${side}`} key={side} aria-labelledby={`conference-${side}`}>
+            <h2 id={`conference-${side}`} dir={dir}>{side === 'west' ? t('המערב','West') : t('המזרח','East')}</h2>
+            <div className="bracket-wing-rounds">
+              {rounds.map(round => <div className={`bracket-column bracket-${round.key}`} key={round.key} dir={dir}>
+                <h3>{t(round.he, round.en)}</h3>
+                <div className="bracket-pairs">{bracket[side][round.key].map((match, slot) => <Match key={slot} match={match}/>)}</div>
+              </div>)}
+            </div>
+          </section>;
+        })}
+      </div>
     </div>
   </Shell>;
 }
