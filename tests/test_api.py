@@ -2,6 +2,7 @@
 
 Run from the project root: python -m unittest discover -s tests -v
 """
+import json
 import os
 import sys
 import tempfile
@@ -89,6 +90,18 @@ class APIRegressionTests(unittest.TestCase):
             "matchup": line["series_id"], "game_number": line["next_game_number"],
         })
 
+    def test_dashboard_combines_authenticated_market_state(self):
+        self.assertEqual(self.client.get("/api/dashboard").status_code, 401)
+        self.register()
+        response = self.client.get("/api/dashboard")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        self.assertEqual(response.json(), {
+            "user": self.me(),
+            "lines": self.client.get("/api/betting-lines").json(),
+            "futures_lines": self.client.get("/api/futures-lines").json()["futures_lines"],
+        })
+
     def test_session_login_logout_and_wrong_password(self):
         self.assertEqual(self.client.get("/api/me").status_code, 401)
         login = self.register()
@@ -112,6 +125,22 @@ class APIRegressionTests(unittest.TestCase):
         self.assertIn(duplicate.status_code, (400, 409))
         response = self.client.get("/api/user/999999")
         self.assertIn(response.status_code, (403, 404))
+
+    def test_validation_never_echoes_credentials_or_serializes_nan(self):
+        response = self.client.post('/api/register', json={'username': 'qa_user', 'password': 'short'})
+        self.assertEqual(response.status_code, 422, response.text)
+        details = response.json()['detail']
+        self.assertTrue(any(issue['loc'] == ['body', 'password'] for issue in details))
+        self.assertTrue(all(set(issue) == {'loc', 'msg', 'type'} for issue in details))
+        self.assertNotIn('"short"', response.text)
+
+        self.register()
+        body = self.bet(amount=0)
+        content = json.dumps(body).replace('"amount": 0', '"amount": NaN')
+        response = self.client.post('/api/place-bet', content=content, headers={'Content-Type': 'application/json'})
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertEqual(self.me()['balance'], 1000)
+        self.assertEqual(self.history(), [])
 
     def test_expired_session_requires_new_login(self):
         self.register()
@@ -465,6 +494,44 @@ class APIRegressionTests(unittest.TestCase):
         with SessionLocal() as db:
             self.assertEqual(db.query(GameHistory).filter_by(tournament_id=old_tournament).count(), 1)
             self.assertEqual(db.query(Tournament).count(), 2)
+
+    def test_stale_season_cannot_change_new_season_but_old_retry_still_works(self):
+        self.register()
+        view = self.client.get('/api/betting-lines').json()
+        tournament_id, line = view['tournament_id'], view['betting_lines'][0]
+        bet = self.bet(line, tournament_id=tournament_id)
+        original = self.client.post('/api/place-bet', json=bet)
+        self.assertEqual(original.status_code, 200, original.text)
+        reset = self.client.post('/api/reset-tournament', json={'tournament_id': tournament_id})
+        self.assertEqual(reset.status_code, 200, reset.text)
+        self.assertNotEqual(reset.json()['tournament_id'], tournament_id)
+        self.assertEqual(self.client.post('/api/place-bet', json=bet).json(), original.json())
+
+        stale_bet = self.bet(line, tournament_id=tournament_id)
+        stale_series = {'tournament_id': tournament_id, 'matchup': line['series_id'], 'game_number': 1}
+        for path, payload in (
+            ('place-bet', stale_bet), ('simulate-game', stale_series), ('simulate-series-auto', stale_series),
+            ('simulate-tournament-auto', {'tournament_id': tournament_id}),
+            ('reset-tournament', {'tournament_id': tournament_id}),
+            ('reload-bank', {'tournament_id': tournament_id}),
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(self.client.post(f'/api/{path}', json=payload).status_code, 409)
+        self.assertEqual(self.me()['balance'], 1000)
+        self.assertEqual([bet['status'] for bet in self.history()], ['cancelled'])
+        with SessionLocal() as db:
+            self.assertEqual(db.query(GameHistory).count(), 0)
+            self.assertEqual(db.query(Tournament).count(), 2)
+
+    def test_series_auto_rejects_outdated_game_number(self):
+        self.register()
+        view = self.client.get('/api/betting-lines').json()
+        line = view['betting_lines'][0]
+        body = {'tournament_id': view['tournament_id'], 'matchup': line['series_id'], 'game_number': 1}
+        with patch.object(api.engine_nba, 'generate_game_stats', self.game_result):
+            self.assertEqual(self.client.post('/api/simulate-game', json=body).status_code, 200)
+            self.assertEqual(self.client.post('/api/simulate-series-auto', json=body).status_code, 409)
+        self.assertEqual(self.lines()[0]['next_game_number'], 2)
 
     def test_series_failure_rolls_back_games_and_payouts(self):
         self.register()

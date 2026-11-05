@@ -33,6 +33,7 @@ def schema_plan():
             commands.append(str(CreateIndex(index, if_not_exists=True).compile(dialect=pg)).strip() + ';')
         name = quote(table.name)
         commands.append(f'ALTER TABLE {name} ENABLE ROW LEVEL SECURITY;')
+        commands.append(f'REVOKE ALL ON TABLE {name} FROM PUBLIC;')
         for role in ('anon', 'authenticated'):
             commands.append(
                 f"DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role}') "

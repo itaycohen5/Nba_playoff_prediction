@@ -15,5 +15,6 @@ __pycache__/
 .idea/
 .taste-skill/history.json
 .vercel/
+supabase/.temp/
 .env.*
 !.env.example

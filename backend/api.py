@@ -14,9 +14,11 @@ from typing import Literal
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
@@ -60,6 +62,12 @@ async def database_busy(_request, _error):
 async def constraint_conflict(_request, _error):
     return JSONResponse({'detail': 'המצב השתנה. רעננו ונסו שוב.'}, status_code=409)
 
+@app.exception_handler(RequestValidationError)
+async def validation_error(_request, error):
+    # Echoing raw input can disclose passwords or make invalid numbers fail JSON encoding.
+    details = [{key: issue[key] for key in ('loc', 'msg', 'type')} for issue in error.errors()]
+    return JSONResponse({'detail': details}, status_code=422)
+
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
 
@@ -93,6 +101,7 @@ class RegisterRequest(LoginRequest):
 class ActionRequest(StrictModel):
     request_id: UUID = Field(default_factory=uuid4)
     user_id: int | None = None
+    tournament_id: int | None = Field(default=None, gt=0, strict=True)
 
 class PlaceBetRequest(ActionRequest):
     matchup: str = Field(min_length=1, max_length=80)
@@ -107,6 +116,7 @@ class SeriesRequest(ActionRequest):
     matchup: str = Field(min_length=1, max_length=80)
     team1: str | None = None
     team2: str | None = None
+    game_number: int | None = Field(default=None, ge=1, le=7, strict=True)
 
 class GameRequest(SeriesRequest):
     game_number: int = Field(ge=1, le=7, strict=True)
@@ -119,12 +129,17 @@ ReloadBankRequest = ActionRequest
 
 def current_user(request: Request, db: Session = Depends(get_db)):
     token = request.cookies.get(COOKIE)
-    auth = db.get(AuthSession, hashlib.sha256(token.encode()).hexdigest()) if token else None
+    token_hash = hashlib.sha256(token.encode()).hexdigest() if token else None
+    auth = db.get(AuthSession, token_hash) if token_hash else None
     if auth is None or auth.expires_at <= utcnow():
         raise HTTPException(401, 'יש להתחבר מחדש')
     user = db.query(User).filter(User.id == auth.user_id).with_for_update().first()
     if user is None:
         raise HTTPException(401, 'המשתמש אינו זמין')
+    # Logout uses the same user lock. Recheck after waiting for it.
+    auth = db.get(AuthSession, token_hash, populate_existing=True)
+    if auth is None or auth.expires_at <= utcnow():
+        raise HTTPException(401, 'יש להתחבר מחדש')
     return user
 
 
@@ -148,6 +163,10 @@ def identity(req, user):
 
 def fingerprint(action, req):
     body = req.model_dump(mode='json', exclude={'request_id'})
+    # Keep existing retry keys valid for requests made before these guards existed.
+    for optional_guard in ('tournament_id', 'game_number'):
+        if body.get(optional_guard) is None:
+            body.pop(optional_guard, None)
     return hashlib.sha256(json.dumps([action, body], sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
 
@@ -169,8 +188,10 @@ def finish(db, user, req, digest, result):
     return result
 
 
-def active_tournament(db, user):
+def active_tournament(db, user, expected_id=None):
     tournament = db.query(Tournament).filter_by(owner_id=user.id, status='active').first()
+    if expected_id is not None and (tournament is None or tournament.id != expected_id):
+        raise HTTPException(409, 'העונה השתנתה. רעננו את הנתונים לפני הפעולה')
     if tournament is None:
         tournament = Tournament(owner_id=user.id)
         db.add(tournament)
@@ -231,8 +252,8 @@ def require_matchup(db, tournament, req):
     return round_number, t1, t2, games
 
 
-def futures_quotes(db, tournament):
-    _, rounds, by_series, champion = bracket_state(db, tournament)
+def futures_quotes(state):
+    _, rounds, by_series, champion = state
     if champion:
         return []
     alive = set(engine_nba.west_teams.values()) | set(engine_nba.east_teams.values())
@@ -250,7 +271,7 @@ def quote_bet(db, tournament, req):
     if req.bet_type == 'futures_champion':
         if req.matchup != 'NBA Finals' or req.game_number != 0:
             raise HTTPException(422, 'הימור אליפות דורש שוק אליפות ומספר משחק 0')
-        quote = next((q for q in futures_quotes(db, tournament) if q['team'] == req.team_bet_on), None)
+        quote = next((q for q in futures_quotes(bracket_state(db, tournament)) if q['team'] == req.team_bet_on), None)
         if not quote:
             raise HTTPException(409, 'שוק האליפות סגור או שהקבוצה הודחה')
         return quote['odds'], None
@@ -339,14 +360,18 @@ def register(req: RegisterRequest, response: Response, db: Session = Depends(get
 @app.post('/api/login')
 def login(req: LoginRequest, response: Response, request: Request, db: Session = Depends(get_db)):
     key = hashlib.sha256(f'{request.client.host if request.client else "local"}:{req.username}'.encode()).hexdigest()
-    attempt = db.query(LoginAttempt).filter_by(key=key).with_for_update().first()
     now = utcnow()
+    if db.get_bind().dialect.name == 'postgresql':
+        # SELECT FOR UPDATE cannot lock a counter that does not exist yet.
+        db.execute(postgres_insert(LoginAttempt).values(key=key, failures=0, window_start=now)
+                   .on_conflict_do_nothing(index_elements=[LoginAttempt.key]))
+    attempt = db.query(LoginAttempt).filter_by(key=key).with_for_update().first()
     if attempt and (now - attempt.window_start).total_seconds() >= 900:
         attempt.failures, attempt.window_start = 0, now
     if attempt and attempt.failures >= 10:
         raise HTTPException(429, 'יותר מדי ניסיונות. נסו שוב בעוד 15 דקות', headers={'Retry-After': '900'})
     user = db.query(User).filter_by(username=req.username).with_for_update().first()
-    if not user or not verify_password(req.password, user.hashed_password):
+    if not verify_password(req.password, user.hashed_password if user else None):
         if attempt is None:
             attempt = LoginAttempt(key=key, failures=0, window_start=now)
             db.add(attempt)
@@ -377,10 +402,8 @@ def legacy_user(user_id: int, user: User = Depends(current_user)):
         raise HTTPException(403, 'אין הרשאה למשתמש זה')
     return wallet(user)
 
-@app.get('/api/betting-lines')
-def betting_lines(user: User = Depends(current_user), db: Session = Depends(get_db)):
-    tournament = active_tournament(db, user)
-    active, rounds, by_series, champion = bracket_state(db, tournament)
+def market_lines(tournament, state):
+    active, rounds, by_series, champion = state
     lines = []
     for sid, t1, t2 in rounds[active - 1]:
         games = by_series.get(sid, [])
@@ -388,17 +411,32 @@ def betting_lines(user: User = Depends(current_user), db: Session = Depends(get_
             continue
         counts = Counter(g.winner for g in games)
         lines.append({'series_id': sid, 'current_round': active, 'team1': t1, 'team2': t2,
+                      'home_team': engine_nba.home_team(t1, t2, len(games) + 1),
                       'series_score': f'{counts[t1]} - {counts[t2]}', 'next_game_number': len(games) + 1,
                       'is_unlocked': True, 'conference': 'west' if sid.startswith('West ') else 'east' if sid.startswith('East ') else 'finals',
                       'odds': engine_nba.calculate_advanced_odds(t1, t2, series_history=games)})
-    db.commit()
     return {'active_round': active, 'betting_lines': lines, 'tournament_id': tournament.id, 'champion': champion,
             'data_source': getattr(engine_nba, 'data_source', 'season snapshot')}
+
+@app.get('/api/dashboard')
+def dashboard(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    tournament = active_tournament(db, user)
+    state = bracket_state(db, tournament)
+    result = {'user': wallet(user), 'lines': market_lines(tournament, state), 'futures_lines': futures_quotes(state)}
+    db.commit()
+    return result
+
+@app.get('/api/betting-lines')
+def betting_lines(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    tournament = active_tournament(db, user)
+    result = market_lines(tournament, bracket_state(db, tournament))
+    db.commit()
+    return result
 
 @app.get('/api/futures-lines')
 def futures_lines(user: User = Depends(current_user), db: Session = Depends(get_db)):
     tournament = active_tournament(db, user)
-    lines = futures_quotes(db, tournament)
+    lines = futures_quotes(bracket_state(db, tournament))
     db.commit()
     return {'futures_lines': lines}
 
@@ -407,7 +445,7 @@ def place_bet(req: PlaceBetRequest, user: User = Depends(current_user), db: Sess
     previous, digest = replay(db, user, req, 'bet')
     if previous is not None:
         return previous
-    tournament = active_tournament(db, user)
+    tournament = active_tournament(db, user, req.tournament_id)
     odds, target = quote_bet(db, tournament, req)
     if (req.odds is not None and not math.isclose(req.odds, odds, abs_tol=.004, rel_tol=0)) or (
             req.target_value is not None and (target is None or not math.isclose(req.target_value, target, abs_tol=.0001, rel_tol=0))):
@@ -430,7 +468,7 @@ def simulate_single_game(req: GameRequest, user: User = Depends(current_user), d
     previous, digest = replay(db, user, req, 'game')
     if previous is not None:
         return previous
-    tournament = active_tournament(db, user)
+    tournament = active_tournament(db, user, req.tournament_id)
     require_matchup(db, tournament, req)
     result = simulate_one(db, user, tournament, req.matchup, req.game_number)
     return finish(db, user, req, digest, {'game_result': result, 'message': 'המשחק הסתיים', 'new_balance': user.balance_cents / 100})
@@ -440,8 +478,10 @@ def simulate_series_auto(req: SeriesRequest, user: User = Depends(current_user),
     previous, digest = replay(db, user, req, 'series')
     if previous is not None:
         return previous
-    tournament = active_tournament(db, user)
-    _, t1, t2, _ = require_matchup(db, tournament, req)
+    tournament = active_tournament(db, user, req.tournament_id)
+    _, t1, t2, games = require_matchup(db, tournament, req)
+    if req.game_number is not None and req.game_number != len(games) + 1:
+        raise HTTPException(409, 'מספר המשחק השתנה. רעננו את הנתונים')
     results = []
     for _ in range(7):
         if winner_of(series_games(db, tournament, req.matchup), t1, t2):
@@ -459,13 +499,13 @@ def simulate_tournament_auto(req: ActionRequest | None = None, user: User = Depe
     previous, digest = replay(db, user, req, 'tournament')
     if previous is not None:
         return previous
-    tournament = active_tournament(db, user)
+    tournament = active_tournament(db, user, req.tournament_id)
     results = []
     for _ in range(105):
-        _, rounds, by_series, champion = bracket_state(db, tournament)
+        active, rounds, by_series, champion = bracket_state(db, tournament)
         if champion:
             break
-        active, matches = get_round_matchups(db, tournament)
+        matches = rounds[active - 1]
         match = next((m for m in matches if m[1] and m[2] and not winner_of(by_series.get(m[0], []), m[1], m[2])), None)
         if not match:
             raise HTTPException(409, 'הטורניר אינו יכול להתקדם')
@@ -482,7 +522,7 @@ def reset_tournament(req: ActionRequest | None = None, user: User = Depends(curr
     previous, digest = replay(db, user, req, 'reset')
     if previous is not None:
         return previous
-    tournament = active_tournament(db, user)
+    tournament = active_tournament(db, user, req.tournament_id)
     pending = db.query(Bet).filter_by(tournament_id=tournament.id, user_id=user.id, status='pending').all()
     refund = sum(b.amount_cents for b in pending)
     for bet in pending:
@@ -502,6 +542,8 @@ def reload_bank(req: ActionRequest | None = None, user: User = Depends(current_u
     previous, digest = replay(db, user, req, 'reload')
     if previous is not None:
         return previous
+    if req.tournament_id is not None:
+        active_tournament(db, user, req.tournament_id)
     if user.balance_cents > 100:
         raise HTTPException(400, 'מילוי יתרה זמין ביתרה של דולר מדומה אחד או פחות')
     if user.last_reload and (utcnow() - user.last_reload).total_seconds() < 10:

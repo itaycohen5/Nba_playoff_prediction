@@ -91,3 +91,15 @@
 @media(max-width:760px){.td-series-strip>li{font-size:12px}}
 
 @media(max-width:760px){.td-dashboard input,.td-dashboard select{font-size:16px}}
+/* Preserve touch controls and prevent collisions when a user enlarges the page. */
+.td-title-row,.td-conference-filters,.td-market-tabs,.td-match-actions{flex-wrap:wrap}
+.td-match,.td-side-panel{container-type:inline-size}
+.td-home-tag{margin-inline-start:.5em;font-size:.68em;font-weight:600;white-space:nowrap}
+.td-series-strip>li>span{max-inline-size:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@container (max-width: 265px){
+  .td-quote{flex-direction:column;align-items:flex-start;gap:4px}
+  .td-quote>span{overflow-wrap:anywhere}
+  .td-bet-row{grid-template-columns:minmax(0,1fr)}
+  .td-market-tabs{gap:0 16px}
+  .td-match-actions{gap:0 16px}
+}

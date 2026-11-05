@@ -71,6 +71,10 @@ west_sorted = [t for t in sorted(team_db.keys(), key=lambda k: team_db[k]['CUM_W
 # בניית המילונים החל מאינדקס 1 להתאמה מלאה למבנה הבראקט
 east_teams = {i + 1: east_sorted[i] for i in range(min(8, len(east_sorted)))}
 west_teams = {i + 1: west_sorted[i] for i in range(min(8, len(west_sorted)))}
+if len(east_teams) != 8 or len(west_teams) != 8:
+    raise ValueError("The playoff simulation requires eight teams per conference")
+east_seeds = {team: seed for seed, team in east_teams.items()}
+west_seeds = {team: seed for seed, team in west_teams.items()}
 
 
 def simulate_game(home_team, away_team):
@@ -120,6 +124,12 @@ def simulate_game(home_team, away_team):
 
 def simulate_series(team1, team2):
     """סימולציית סדרת פלייאוף הטוב מ-7"""
+    # In conference rounds, home court follows the original seeds even
+    # when a lower seed reaches this round through an upset.
+    for seeds in (east_seeds, west_seeds):
+        if team1 in seeds and team2 in seeds and seeds[team1] > seeds[team2]:
+            team1, team2 = team2, team1
+            break
     team1_wins = 0
     team2_wins = 0
 

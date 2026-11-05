@@ -4,17 +4,19 @@ import Link from 'next/link';
 import { useId, useRef, useState, type KeyboardEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import { useLanguage } from '@/lib/i18n';
-import { api, ApiError, record, parseUser, parseLines, parseFutures, money, wagerValue, messageOf, type Line, type User } from '@/lib/api';
+import { api, ApiError, record, parseUser, parseLines, parseFutures, money, wagerValue, messageOf, type Future, type Line, type User } from '@/lib/api';
 import { useProtected } from '@/lib/use-protected';
 import { Shell, LoadError, Notice, ConfirmDialog } from '@/components/ui';
 
 async function loadDashboard(signal?: AbortSignal) {
-  const [user, lines, futures] = await Promise.all([
-    api('/me', parseUser, undefined, 15000, signal),
-    api('/betting-lines', parseLines, undefined, 15000, signal),
-    api('/futures-lines', parseFutures, undefined, 15000, signal),
-  ]);
-  return {user, lines, futures};
+  return api('/dashboard', value => {
+    const snapshot = record(value);
+    return {
+      user: parseUser(snapshot.user),
+      lines: parseLines(snapshot.lines),
+      futures: parseFutures(snapshot),
+    };
+  }, undefined, 15000, signal);
 }
 type Market = 'moneyline' | 'series_winner' | 'spread' | 'over_under_points';
 type Conference = 'all' | 'west' | 'east' | 'finals';
@@ -54,6 +56,10 @@ function GameCard({line,user,busy,place,simulate,featured}: {line:Line;user:User
       odds:market === 'series_winner' ? odds.series_winner![team] : market === 'spread' ? odds.spread!.odds : odds.moneyline[team]},
       label:market === 'spread' ? `${team} (${(spread ?? 0) > 0 ? '+' : ''}${spread})` : team};
   });
+  const currentSelection = selection && options.find(({selection: option}) =>
+    option.type === selection.type && option.target === selection.target &&
+    option.value === selection.value && option.odds === selection.odds,
+  )?.selection;
   function chooseMarket(next:Market) {setMarket(next);setSelection(null);setError('');}
   function tabKeys(event:KeyboardEvent<HTMLButtonElement>, index:number) {
     const forward = locale === 'he' ? 'ArrowLeft' : 'ArrowRight';
@@ -71,7 +77,8 @@ function GameCard({line,user,busy,place,simulate,featured}: {line:Line;user:User
     event.preventDefault();if (busy) return;setError('');
     try {
       if (!selection) throw new Error('יש לבחור תחזית לפני השליחה');
-      await place(line.series_id,line.next_game_number,selection,wagerValue(amount,user.balance));
+      if (!currentSelection) throw new Error('יחס ההימור או הקו השתנו. בחרו הצעה מעודכנת');
+      await place(line.series_id,line.next_game_number,currentSelection,wagerValue(amount,user.balance));
       setAmount('');setSelection(null);
     } catch(e) {setError(messageOf(e));}
   }
@@ -79,7 +86,12 @@ function GameCard({line,user,busy,place,simulate,featured}: {line:Line;user:User
   const conference = line.series_id.startsWith('West') ? t('מערב','West') : line.series_id.startsWith('East') ? t('מזרח','East') : t('גמר NBA','NBA Finals');
   return <article className={`td-match ${featured ? 'td-featured' : ''}`} aria-labelledby={`${id}-title`}>
     <header className="td-match-meta"><span>{conference} · {t('משחק','Game')} {line.next_game_number}</span><span>{t('סדרה','Series')} <b dir="ltr">{line.series_score}</b></span></header>
-    <h2 id={`${id}-title`} className="td-match-title"><span className="td-team-title-row"><span dir="auto">{line.team1}</span><b>{scores[0] ?? '—'}</b></span><span className="td-team-title-row"><span dir="auto">{line.team2}</span><b>{scores[1] ?? '—'}</b></span></h2>
+    <h2 id={`${id}-title`} className="td-match-title">
+      {[line.team1, line.team2].map((team, index) => <span className="td-team-title-row" key={team}>
+        <span dir="auto">{team}{team === line.home_team && <small className="td-home-tag">{t('בית','Home')}</small>}</span>
+        <b>{scores[index] ?? '—'}</b>
+      </span>)}
+    </h2>
     <SeriesStrip nextGame={line.next_game_number}/>
     {line.is_unlocked && odds ? <>
       <div className="td-market-tabs" role="tablist" aria-label={t('סוג שוק','Market type')}>
@@ -87,14 +99,14 @@ function GameCard({line,user,busy,place,simulate,featured}: {line:Line;user:User
       </div>
       <div id={`${id}-market`} role="tabpanel" aria-labelledby={`${id}-tab-${market}`} className="td-market-panel">
         <p className="td-market-label">{market === 'moneyline' ? t('מנצחת המשחק','Game winner') : market === 'series_winner' ? t('מנצחת הסדרה','Series winner') : market === 'spread' ? t('הפרש נקודות','Point spread') : t(`סך נקודות: ${odds.over_under_points.line}`,`Total points: ${odds.over_under_points.line}`)}</p>
-        <div className="td-quote-row">{options.map(option => <button key={option.selection.target} type="button" className={`td-quote ${selection?.type === market && selection.target === option.selection.target ? 'td-selected' : ''}`} disabled={busy} aria-pressed={selection?.type === market && selection.target === option.selection.target} onClick={() => {setSelection(option.selection);setError('');}}><span dir="auto">{option.label}</span><strong dir="ltr">{option.selection.odds.toFixed(2)}</strong></button>)}</div>
+        <div className="td-quote-row">{options.map(option => <button key={option.selection.target} type="button" className={`td-quote ${currentSelection === option.selection ? 'td-selected' : ''}`} disabled={busy} aria-pressed={currentSelection === option.selection} onClick={() => {setSelection(option.selection);setError('');}}><span dir="auto">{option.label}</span><strong dir="ltr">{option.selection.odds.toFixed(2)}</strong></button>)}</div>
       </div>
       <form onSubmit={submit} className="td-bet-form" aria-busy={busy}>
         {error && <Notice error>{error}</Notice>}
         <div className="td-bet-row"><label htmlFor={`${id}-amount`}>{t('סכום מדומה ($)','Virtual wager ($)')}<input id={`${id}-amount`} type="number" min="0.01" max={user.balance} step="0.01" inputMode="decimal" value={amount} onChange={event => setAmount(event.target.value)} placeholder="0.00" required disabled={busy}/></label><button className={`td-submit ${featured ? 'td-submit-lead' : ''}`} disabled={busy || user.balance <= 0}>{busy ? t('מתבצע…','Working…') : t('שליחת הימור','Place bet')}</button></div>
-        <p className="td-return">{selection && amount && Number.isFinite(Number(amount)) ? <>{t('זכייה אפשרית','Potential return')} <strong dir="ltr">{money(Number(amount)*selection.odds)}</strong> <span>{t('כולל סכום ההימור','including stake')}</span></> : t('בחרו יחס כדי להרכיב הימור.','Select odds to build a bet.')}</p>
+        <p className="td-return">{currentSelection && Number(amount) > 0 && Number.isFinite(Number(amount)) ? <>{t('זכייה אפשרית','Potential return')} <strong dir="ltr">{money(Number(amount)*currentSelection.odds)}</strong> <span>{t('כולל סכום ההימור','including stake')}</span></> : selection && !currentSelection ? t('היחס השתנה. בחרו מחדש.','The odds changed. Select a new quote.') : t('בחרו יחס כדי להרכיב הימור.','Select odds to build a bet.')}</p>
       </form>
-      <footer className="td-match-actions"><button type="button" disabled={busy} onClick={() => void simulate('/simulate-game',{matchup:line.series_id,game_number:line.next_game_number}).catch(() => {})}>{t('הרצת משחק','Simulate game')}</button><button type="button" disabled={busy} onClick={() => void simulate('/simulate-series-auto',{matchup:line.series_id}).catch(() => {})}>{t('הרצת סדרה','Simulate series')}</button></footer>
+      <footer className="td-match-actions"><button type="button" disabled={busy} onClick={() => void simulate('/simulate-game',{matchup:line.series_id,game_number:line.next_game_number}).catch(() => {})}>{t('הרצת משחק','Simulate game')}</button><button type="button" disabled={busy} onClick={() => void simulate('/simulate-series-auto',{matchup:line.series_id,game_number:line.next_game_number}).catch(() => {})}>{t('הרצת סדרה','Simulate series')}</button></footer>
     </> : <p className="td-no-market">{t('השוק ייפתח כאשר המשתתפות ייקבעו.','The market opens once the teams are confirmed.')}</p>}
   </article>;
 }
@@ -108,24 +120,35 @@ export default function Dashboard() {
   const {t} = useLanguage();
   const router = useRouter();
   const {data,error,loading,refresh} = useProtected(loadDashboard);
-  const lock = useRef(false), lastAttempt = useRef<{fingerprint:string;requestId:string}|null>(null);
+  const lock = useRef(false);
+  const pendingRequests = useRef(new Map<string, string>());
   const [busy,setBusy] = useState(false), [actionError,setActionError] = useState(''), [message,setMessage] = useState('');
-  const [team,setTeam] = useState(''), [wager,setWager] = useState(''), [confirmReset,setConfirmReset] = useState(false);
+  const [futurePick,setFuturePick] = useState<(Future & {tournamentId: number})|null>(null);
+  const [wager,setWager] = useState(''), [resetSeason,setResetSeason] = useState<number|null>(null);
   const [conference,setConference] = useState<Conference>('all');
+  const selectedFuture = futurePick && data?.lines.tournament_id === futurePick.tournamentId
+    ? data.futures.find(future => future.team === futurePick.team && future.odds === futurePick.odds)
+    : undefined;
 
   async function mutate(path:string,body:Record<string,unknown>,success?:string):Promise<void> {
     if (lock.current) throw new Error('פעולה אחרת עדיין מתבצעת');
-    const fingerprint = JSON.stringify({path,body,tournament:data?.lines.tournament_id});
-    const requestId = lastAttempt.current?.fingerprint === fingerprint ? lastAttempt.current.requestId : crypto.randomUUID();
-    lastAttempt.current = {fingerprint,requestId};lock.current = true;setBusy(true);setActionError('');setMessage('');
+    if (!data) return;
+    const payload = {tournament_id: data.lines.tournament_id, ...body};
+    const fingerprint = JSON.stringify({path, payload});
+    const requestId = pendingRequests.current.get(fingerprint) ?? crypto.randomUUID();
+    pendingRequests.current.set(fingerprint, requestId);
+    lock.current = true;setBusy(true);setActionError('');setMessage('');
     try {
-      const result = await api(path,record,{...body,request_id:requestId},path === '/simulate-tournament-auto' ? 120000 : 30000);
-      lastAttempt.current = null;
+      const result = await api(path,record,{...payload,request_id:requestId},path === '/simulate-tournament-auto' ? 120000 : 30000);
       const game = result.game_result && typeof result.game_result === 'object' ? record(result.game_result) : null;
+      pendingRequests.current.delete(fingerprint);
       setMessage(game && typeof game.winner === 'string' ? `מנצחת המשחק: ${game.winner} · ${game.t1_pts}–${game.t2_pts}` : success ?? 'הסימולציה הושלמה. התוצאות עודכנו.');
       await refresh();
     } catch(e) {
-      if (e instanceof ApiError && e.status > 0) lastAttempt.current = null;
+      // A gateway error can arrive after the server commits the action.
+      if (e instanceof ApiError && e.status >= 400 && e.status < 500 && e.status !== 408) {
+        pendingRequests.current.delete(fingerprint);
+      }
       if (e instanceof ApiError && e.status === 401) router.replace('/login');
       if (e instanceof ApiError && e.status === 409) await refresh();
       setActionError(messageOf(e));throw e;
@@ -137,16 +160,20 @@ export default function Dashboard() {
   async function futureSubmit(event:React.FormEvent) {
     event.preventDefault();if (!data || busy) return;
     try {
-      const selected = data.futures.find(future => future.team === team);
-      if (!selected) throw new Error('יש לבחור קבוצה');
-      await place('NBA Finals',0,{type:'futures_champion',target:team,value:null,odds:selected.odds},wagerValue(wager,data.user.balance));
-      setTeam('');setWager('');
+      if (!futurePick) throw new Error('יש לבחור קבוצה');
+      if (!selectedFuture) throw new Error('יחס ההימור או הקו השתנו. בחרו הצעה מעודכנת');
+      await place('NBA Finals',0,{type:'futures_champion',target:selectedFuture.team,value:null,odds:selectedFuture.odds},wagerValue(wager,data.user.balance));
+      setFuturePick(null);setWager('');
     } catch(e) {setActionError(messageOf(e));}
   }
   if (loading) return <DashboardLoading/>;
   if (!data) return <Shell><div className="td-dashboard"><LoadError message={error} retry={() => void refresh()}/></div></Shell>;
 
   const {user,lines,futures} = data;
+  function chooseFuture(team: string) {
+    const quote = futures.find(future => future.team === team);
+    setFuturePick(quote ? {...quote, tournamentId: lines.tournament_id} : null);
+  }
   const groups:{key:Conference;label:string;items:Line[]}[] = [
     {key:'all',label:t('הכול','All'),items:lines.betting_lines},
     {key:'west',label:t('מערב','West'),items:lines.betting_lines.filter(line => line.series_id.startsWith('West'))},
@@ -156,22 +183,35 @@ export default function Dashboard() {
   const visible = groups.find(group => group.key === conference)!.items;
   const rounds = [t('סיבוב ראשון','First round'),t('חצי גמר אזורי','Conference semifinals'),t('גמר אזורי','Conference finals'),t('גמר NBA','NBA Finals')];
   const round = lines.champion ? t('הטורניר הושלם','Tournament complete') : rounds[lines.active_round-1] ?? t('פלייאוף','Playoffs');
-  const selectedFuture = futures.find(future => future.team === team);
   return <Shell user={user}><div className="td-dashboard">
     <header className="td-title-row"><div><h1>{t('שווקי הפלייאוף','Playoff markets')}</h1><p>{round}<span>·</span>{t('עונה','Season')} #{lines.tournament_id}<span>·</span>{lines.betting_lines.length} {t('סדרות פתוחות','open series')}</p></div><button type="button" className="button ghost" disabled={busy} onClick={() => void refresh()}>{t('רענון יחסים','Refresh odds')}</button></header>
-    {error && <Notice error>{error}</Notice>}{actionError && <Notice error>{actionError}</Notice>}{message && <Notice>{message}</Notice>}
+    {error && <Notice error>{error}</Notice>}{actionError && resetSeason === null && <Notice error>{actionError}</Notice>}{message && <Notice>{message}</Notice>}
     <div className="td-workspace">
       <section className="td-markets" aria-label={t('משחקים זמינים להימור','Available games to bet')}>
         <div className="td-conference-filters" role="group" aria-label={t('סינון לפי אזור','Filter by conference')}>{groups.map(group => <button type="button" key={group.key} aria-pressed={conference === group.key} className={conference === group.key ? 'td-active-filter' : ''} onClick={() => setConference(group.key)}>{group.label}<span>{group.items.length}</span></button>)}</div>
         {visible.length ? <div className="td-match-grid">{visible.map((line,index) => <GameCard key={`${lines.tournament_id}:${line.series_id}:${line.next_game_number}`} line={line} user={user} busy={busy} place={place} simulate={mutate} featured={index === 0}/>)}</div> : <div className="td-market-empty"><h2>{lines.champion ? t('האלופה נקבעה','The champion is decided') : t('אין סדרות פתוחות באזור הזה','No open series in this conference')}</h2><p>{lines.champion ?? t('סדרות חדשות נפתחות כשהסיבוב הקודם מסתיים.','New series open when the previous round ends.')}</p>{conference !== 'all' && <button className="button ghost" onClick={() => setConference('all')}>{t('כל הסדרות','All series')}</button>}{lines.champion && <Link className="text-link" href="/bracket">{t('תוצאות הטורניר','Tournament results')}</Link>}</div>}
       </section>
       <aside className="td-rail" aria-label={t('אליפות וניהול טורניר','Championship and tournament controls')}>
-        <section className="td-side-panel"><h2>{t('אלופת NBA','NBA champion')}</h2>{lines.champion ? <div className="td-champion"><p>{t('האלופה בעונה הזאת','This season’s champion')}</p><strong dir="auto">{lines.champion}</strong><Link className="text-link" href="/history">{t('לבדיקת ההימורים','Review your bets')}</Link></div> : <form onSubmit={futureSubmit} className="td-future-form" aria-busy={busy}><label htmlFor="td-future-team">{t('קבוצה לאליפות','Championship pick')}<select id="td-future-team" value={team} onChange={event => setTeam(event.target.value)} disabled={busy} required><option value="">{t('בחירת קבוצה','Select a team')}</option>{futures.map(future => <option key={future.team} value={future.team}>{future.team} · {future.odds.toFixed(2)}</option>)}</select></label><div className="td-bet-row"><label htmlFor="td-future-amount">{t('סכום מדומה ($)','Virtual wager ($)')}<input id="td-future-amount" type="number" min="0.01" max={user.balance} step="0.01" inputMode="decimal" value={wager} onChange={event => setWager(event.target.value)} placeholder="0.00" disabled={busy} required/></label><button className="td-submit" disabled={busy || user.balance <= 0}>{t('שליחת הימור','Place bet')}</button></div><p className="td-return">{selectedFuture ? <>{t('יחס נבחר','Selected odds')} <strong dir="ltr">{selectedFuture.odds.toFixed(2)}</strong></> : t('שוק האליפות נסגר בהכרעת הטורניר.','The championship market closes when the tournament is decided.')}</p></form>}</section>
+        <section className="td-side-panel"><h2>{t('אלופת NBA','NBA champion')}</h2>{lines.champion ? <div className="td-champion"><p>{t('האלופה בעונה הזאת','This season’s champion')}</p><strong dir="auto">{lines.champion}</strong><Link className="text-link" href="/history">{t('לבדיקת ההימורים','Review your bets')}</Link></div> : <form onSubmit={futureSubmit} className="td-future-form" aria-busy={busy}><label htmlFor="td-future-team">{t('קבוצה לאליפות','Championship pick')}<select id="td-future-team" value={selectedFuture?.team ?? ''} onChange={event => chooseFuture(event.target.value)} disabled={busy} required><option value="">{t('בחירת קבוצה','Select a team')}</option>{futures.map(future => <option key={future.team} value={future.team}>{future.team} · {future.odds.toFixed(2)}</option>)}</select></label><div className="td-bet-row"><label htmlFor="td-future-amount">{t('סכום מדומה ($)','Virtual wager ($)')}<input id="td-future-amount" type="number" min="0.01" max={user.balance} step="0.01" inputMode="decimal" value={wager} onChange={event => setWager(event.target.value)} placeholder="0.00" disabled={busy} required/></label><button className="td-submit" disabled={busy || user.balance <= 0}>{t('שליחת הימור','Place bet')}</button></div><p className="td-return">{selectedFuture ? <>{t('יחס נבחר','Selected odds')} <strong dir="ltr">{selectedFuture.odds.toFixed(2)}</strong></> : futurePick ? t('יחס האליפות השתנה. בחרו מחדש.','The championship odds changed. Select a new quote.') : t('שוק האליפות נסגר בהכרעת הטורניר.','The championship market closes when the tournament is decided.')}</p></form>}</section>
         <section className="td-side-panel td-tournament-controls"><h2>{t('הרצת הטורניר','Tournament simulation')}</h2><p>{t('משחקים בודדים משאירים את ההחלטה הבאה בידיים שלך. הרצה מלאה מכריעה את כל הסדרות.','Individual games leave the next decision to you. A full simulation settles every series.')}</p><button className="button ghost" disabled={busy || !!lines.champion} onClick={() => void mutate('/simulate-tournament-auto',{}).catch(() => {})}>{busy ? t('מריצים…','Simulating…') : t('הרצת כל הפלייאוף','Simulate playoffs')}</button></section>
-        <section className="td-side-panel td-season-controls"><h2>{t('העונה והיתרה','Season and balance')}</h2><button type="button" disabled={busy || user.balance > 1} onClick={() => void mutate('/reload-bank',{},'נוספו $1,000 מדומים ליתרה').catch(() => {})}>{t('קבלת $1,000 מדומים','Claim $1,000 virtual funds')}</button><small>{t('זמין ביתרה של $1 או פחות, בכפוף לזמן המתנה.','Available at a balance of $1 or less, subject to a waiting period.')}</small><button type="button" disabled={busy} onClick={() => setConfirmReset(true)}>{t('פתיחת עונה חדשה','Start new season')}</button><small>{t('הימורים פתוחים יוחזרו. ההיסטוריה נשמרת.','Open bets will be refunded. Your history is preserved.')}</small></section>
+        <section className="td-side-panel td-season-controls"><h2>{t('העונה והיתרה','Season and balance')}</h2><button type="button" disabled={busy || user.balance > 1} onClick={() => void mutate('/reload-bank',{},'נוספו $1,000 מדומים ליתרה').catch(() => {})}>{t('קבלת $1,000 מדומים','Claim $1,000 virtual funds')}</button><small>{t('זמין ביתרה של $1 או פחות, בכפוף לזמן המתנה.','Available at a balance of $1 or less, subject to a waiting period.')}</small><button type="button" disabled={busy} onClick={() => {setActionError('');setResetSeason(lines.tournament_id);}}>{t('פתיחת עונה חדשה','Start new season')}</button><small>{t('הימורים פתוחים יוחזרו. ההיסטוריה נשמרת.','Open bets will be refunded. Your history is preserved.')}</small></section>
         <p className="td-data-note">{t('כסף מדומה בלבד. נתונים היסטוריים שנשמרו בפרויקט; אין תוצאות חיות או דירוג רשמי.','Virtual funds only. Historical project data, not live results or official standings.')}{lines.data_source.toLowerCase().includes('fallback') && <> {t('כרגע מופעלים נתוני גיבוי מדומים.','Simulated fallback data is currently in use.')}</>}</p>
       </aside>
     </div>
-    {confirmReset && <ConfirmDialog busy={busy} cancel={() => setConfirmReset(false)} confirm={() => void mutate('/reset-tournament',{},'העונה החדשה מוכנה. בהצלחה!').then(() => setConfirmReset(false)).catch(() => {})}/>}
+    {resetSeason !== null && <ConfirmDialog
+      busy={busy}
+      error={actionError}
+      cancel={() => setResetSeason(null)}
+      confirm={() => void mutate('/reset-tournament', {tournament_id: resetSeason}, 'העונה החדשה מוכנה. בהצלחה!')
+        .then(() => {
+          setResetSeason(null);
+          setFuturePick(null);
+          setWager('');
+          setConference('all');
+        })
+        .catch(error => {
+          if (error instanceof ApiError && error.status === 409) setResetSeason(null);
+        })}
+    />}
   </div></Shell>;
 }

@@ -24,7 +24,7 @@ export function parseUser(value: unknown): User {
   return { user_id: number(r.user_id), username: text(r.username), balance: number(r.balance) };
 }
 export interface Odds { moneyline: Record<string, number>; series_winner?: Record<string, number>; spread?: {team1_spread: number; team2_spread: number; odds: number}; over_under_points: {line: number; over_odds: number; under_odds: number} }
-export interface Line { series_id: string; team1: string; team2: string; series_score: string; next_game_number: number; is_unlocked: boolean; odds: Odds | null }
+export interface Line { series_id: string; team1: string; team2: string; home_team: string | null; series_score: string; next_game_number: number; is_unlocked: boolean; odds: Odds | null }
 function numericRecord(value: unknown): Record<string, number> {
   return Object.fromEntries(Object.entries(record(value)).map(([k,v]) => [k, number(v)]));
 }
@@ -38,7 +38,7 @@ function parseLine(value: unknown): Line {
       over_under_points: {line: number(total.line), over_odds: number(total.over_odds), under_odds: number(total.under_odds)} };
     if (o.spread) {const spread = record(o.spread); odds.spread = {team1_spread: number(spread.team1_spread), team2_spread: number(spread.team2_spread), odds: number(spread.odds)};}
   }
-  const line = { series_id: text(r.series_id), team1: text(r.team1), team2: text(r.team2), series_score: text(r.series_score), next_game_number: number(r.next_game_number), is_unlocked: r.is_unlocked, odds };
+  const line = { series_id: text(r.series_id), team1: text(r.team1), team2: text(r.team2), home_team: r.home_team == null ? null : text(r.home_team), series_score: text(r.series_score), next_game_number: number(r.next_game_number), is_unlocked: r.is_unlocked, odds };
   if (odds && (!Number.isFinite(odds.moneyline[line.team1]) || !Number.isFinite(odds.moneyline[line.team2]))) throw new ApiError('יחסי המשחק אינם תקינים');
   if (odds?.series_winner && (!Number.isFinite(odds.series_winner[line.team1]) || !Number.isFinite(odds.series_winner[line.team2]))) throw new ApiError('יחסי הסדרה אינם תקינים');
   return line;
@@ -77,11 +77,17 @@ export async function api<T>(path: string, parse: Parser<T>, body?: unknown, tim
       headers: body === undefined ? undefined : {'Content-Type': 'application/json'}, body: body === undefined ? undefined : JSON.stringify(body), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout) });
   } catch (error) {
     if (signal?.aborted) throw error;
+    if (path === '/login' || path === '/register') {
+      throw new ApiError('לא התקבלה תשובה משירות הכניסה. בדקו את החיבור ונסו שוב.');
+    }
     throw new ApiError('לא התקבלה תשובה מהשרת. בפעולת הימור אפשר לנסות שוב עם אותם פרטים ללא חיוב כפול.');
   }
   const value: unknown = await response.json().catch(() => null);
   if (!response.ok) {
     const detail = value && typeof value === 'object' && 'detail' in value ? value.detail : null;
+    if ((path === '/login' || path === '/register') && response.status >= 500) {
+      throw new ApiError('שירות הכניסה אינו זמין כרגע. נסו שוב בעוד רגע.', response.status);
+    }
     const message = response.status >= 500 ? 'השירות אינו זמין כרגע. נסו שוב בעוד רגע.' : Array.isArray(detail) ? detail.map(v => v && typeof v === 'object' && 'msg' in v ? String(v.msg) : 'קלט לא תקין').join(' · ') : typeof detail === 'string' ? detail : 'הפעולה לא הושלמה. יש לבדוק את הפרטים ולנסות שוב.';
     throw new ApiError(response.status === 401 && path !== '/login' ? 'יש להתחבר מחדש' : message, response.status);
   }
@@ -104,6 +110,8 @@ const messageTranslations: Record<string, string> = {
   "יחסי המשחק אינם תקינים": "Invalid game odds",
   "יחסי הסדרה אינם תקינים": "Invalid series odds",
   "לא התקבלה תשובה מהשרת. בפעולת הימור אפשר לנסות שוב עם אותם פרטים ללא חיוב כפול.": "The server did not respond. You can retry the same bet without being charged twice.",
+  "לא התקבלה תשובה משירות הכניסה. בדקו את החיבור ונסו שוב.": "The sign-in service did not respond. Check your connection and try again.",
+  "שירות הכניסה אינו זמין כרגע. נסו שוב בעוד רגע.": "The sign-in service is temporarily unavailable. Try again shortly.",
   "השירות אינו זמין כרגע. נסו שוב בעוד רגע.": "The service is temporarily unavailable. Please try again shortly.",
   "הפעולה לא הושלמה. יש לבדוק את הפרטים ולנסות שוב.": "The action could not be completed. Check your details and try again.",
   "יש להתחבר מחדש": "Please sign in again",
@@ -137,6 +145,7 @@ const messageTranslations: Record<string, string> = {
   "קבוצה לא תקינה": "Invalid team",
   "יש לבחור מעל או מתחת לקו": "Select over or under the total",
   "מספר המשחק השתנה. רעננו את הנתונים": "The game number has changed. Refresh the data",
+  "העונה השתנתה. רעננו את הנתונים לפני הפעולה": "The season has changed. Refresh the data before trying again",
   "שם המשתמש כבר קיים": "This username is already taken",
   "יותר מדי ניסיונות. נסו שוב בעוד 15 דקות": "Too many attempts. Please try again in 15 minutes",
   "שם המשתמש או הסיסמה שגויים": "The username or password is incorrect",

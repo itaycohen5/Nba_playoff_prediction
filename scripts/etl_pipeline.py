@@ -43,13 +43,21 @@ def main():
     for col in features:
         perf["ROLL_" + col] = gamelog.groupby("TEAM_ID")[col].transform(
             lambda values: values.shift(1).rolling(window=5, min_periods=1).mean())
-    home = perf[perf["IS_HOME"].eq(1)]
-    away = perf[perf["IS_HOME"].eq(0)]
-    matchups = home.merge(away, on="GAME_ID", suffixes=("_HOME", "_AWAY"), validate="one_to_one")
-    if len(matchups) != gamelog["GAME_ID"].nunique():
-        raise ValueError("Incomplete home/away pairs")
-    if not (matchups["WIN_HOME"] + matchups["WIN_AWAY"]).eq(1).all():
+    games = perf.groupby("GAME_ID")
+    if not games.size().eq(2).all() or not games["GAME_DATE"].nunique().eq(1).all():
+        raise ValueError("Expected two teams on the same date for each game")
+    if not games["WIN"].sum().eq(1).all():
         raise ValueError("Inconsistent paired outcomes")
+    home_counts = games["IS_HOME"].sum()
+    if home_counts.gt(1).any():
+        raise ValueError("Multiple home teams for one game")
+    # Neutral games appear as two away rows. Keep them in team history but
+    # exclude them from training labels that require a designated home team.
+    home_games = home_counts[home_counts.eq(1)].index
+    training_games = perf[perf["GAME_ID"].isin(home_games)]
+    home = training_games[training_games["IS_HOME"].eq(1)]
+    away = training_games[training_games["IS_HOME"].eq(0)]
+    matchups = home.merge(away, on="GAME_ID", suffixes=("_HOME", "_AWAY"), validate="one_to_one")
     result = matchups[["GAME_ID"]].copy()
     result["GAME_DATE"] = matchups["GAME_DATE_HOME"]
     result["WIN"] = matchups["WIN_HOME"]
@@ -61,6 +69,7 @@ def main():
     if result.empty:
         raise ValueError("No complete historical features")
     atomic_csv(result, BASE / "data" / "clean_real_nba_games.csv")
+    print(f"Excluded {home_counts.eq(0).sum()} neutral games from home-win training labels.")
     print(f"Saved {len(result)} chronological feature rows.")
 
 

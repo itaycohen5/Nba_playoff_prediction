@@ -24,6 +24,14 @@ def test_vercel_refuses_ephemeral_sqlite():
     assert 'SQLite cannot persist a deployed tournament' in result.stderr
 
 
+def test_vercel_rejects_other_database_dialects_before_loading_the_driver():
+    environment = dict(os.environ, VERCEL='1', DATABASE_URL='mysql://invalid.invalid/nonexistent')
+    result = subprocess.run([sys.executable, '-c', 'import backend.db.database'],
+                            cwd=ROOT, env=environment, capture_output=True, text=True, timeout=10)
+    assert result.returncode != 0
+    assert 'DATABASE_URL must select SQLite or PostgreSQL' in result.stderr
+
+
 def test_schema_export_is_offline_and_protects_all_application_tables():
     # Even a remote-looking credential must never be used by this export command.
     environment = dict(os.environ, VERCEL='1', DATABASE_URL='postgresql://invalid.invalid/nonexistent')
@@ -32,6 +40,7 @@ def test_schema_export_is_offline_and_protects_all_application_tables():
     assert result.returncode == 0, result.stderr
     for table in ('users', 'auth_sessions', 'login_attempts', 'tournaments', 'mutations', 'bets', 'game_history'):
         assert f'ALTER TABLE {table} ENABLE ROW LEVEL SECURITY;' in result.stdout
+        assert f'REVOKE ALL ON TABLE {table} FROM PUBLIC;' in result.stdout
         assert f'REVOKE ALL ON TABLE {table} FROM anon;' in result.stdout
         assert f'REVOKE ALL ON TABLE {table} FROM authenticated;' in result.stdout
     assert 'Legacy users table detected' in result.stdout

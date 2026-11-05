@@ -84,13 +84,14 @@ export function TeamBadge({name, small = false}: {name: string; small?: boolean}
   return <span className={`team-badge ${small ? 'small' : ''}`} aria-hidden="true">{initials}</span>;
 }
 
-export function ConfirmDialog({busy, confirm, cancel}: {busy: boolean; confirm: () => void; cancel: () => void}) {
+export function ConfirmDialog({busy, error, confirm, cancel}: {busy: boolean; error?: string; confirm: () => void; cancel: () => void}) {
   const {t} = useLanguage();
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {const dialog = ref.current; dialog?.showModal(); return () => dialog?.close();}, []);
   return <dialog ref={ref} className="confirm-dialog native-dialog" aria-labelledby="reset-title" aria-describedby="reset-description" onCancel={event => {event.preventDefault(); if (!busy) cancel();}}>
     <h2 id="reset-title">{t('פתיחת עונה חדשה','Start a new season')}</h2>
     <p id="reset-description">{t('תוצאות העונה הנוכחית יאורכבו. הימורים פתוחים יבוטלו ויוחזרו ליתרה. ההיסטוריה תישמר.','The current season will be archived. Open bets will be cancelled and refunded. Your history will be preserved.')}</p>
+    {error && <Notice error>{error}</Notice>}
     <div className="app-actions"><button className="button primary" disabled={busy} onClick={confirm}>{busy ? t('פותחים עונה…','Starting season…') : t('אישור ופתיחת עונה','Start new season')}</button><button autoFocus className="button ghost" disabled={busy} onClick={cancel}>{t('ביטול','Cancel')}</button></div>
   </dialog>;
 }

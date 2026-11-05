@@ -4,7 +4,10 @@ import math
 import random
 from functools import lru_cache
 from pathlib import Path
+from statistics import NormalDist
 from types import SimpleNamespace
+
+SCORE_MARGIN = NormalDist(sigma=12)
 
 WEST_SEEDING = [
     "Oklahoma City Thunder", "San Antonio Spurs", "Denver Nuggets", "Los Angeles Lakers",
@@ -23,6 +26,9 @@ class PlayoffEngine:
         self.team_db = {}
         self.west_teams = dict(enumerate(WEST_SEEDING, 1))
         self.east_teams = dict(enumerate(EAST_SEEDING, 1))
+        self.seeds = {team: (conference, seed)
+                      for conference, teams in (("west", self.west_teams), ("east", self.east_teams))
+                      for seed, team in teams.items()}
         self.data_source = "Season CSV; statistical simulator; custom playoff scenario; defensive rating estimated"
         self.load_and_clean_data()
 
@@ -68,16 +74,25 @@ class PlayoffEngine:
             raise RuntimeError("Cannot load team_stats.csv; rebuild offline season statistics. " + str(exc)) from exc
         self.team_db = loaded
 
-    def _expected_points(self, t1, t2, series_history=None):
+    def home_team(self, t1, t2, game_number):
         if t1 == t2 or t1 not in self.team_db or t2 not in self.team_db:
             raise ValueError("Unknown or identical matchup teams")
+        seed1, seed2 = self.seeds.get(t1), self.seeds.get(t2)
+        if seed1 and seed2 and seed1[0] == seed2[0]:
+            team1_has_home_court = seed1[1] < seed2[1]
+        else:
+            # Finals home court follows regular-season record, with a stable tie break.
+            team1_has_home_court = (self.team_db[t1]["CUM_WIN_PCT"], t1) > (self.team_db[t2]["CUM_WIN_PCT"], t2)
+        return t1 if team1_has_home_court == (game_number in (1, 2, 5, 7)) else t2
+
+    def _expected_points(self, t1, t2, series_history=None):
+        history = list(series_history or [])
+        home = self.home_team(t1, t2, len(history) + 1)
         a, b = self.team_db[t1], self.team_db[t2]
         pace = (a["PACE"] + b["PACE"]) / 2
         p1 = (a["OFF_RATING"] + b["DEF_RATING"]) / 2 * pace / 100
         p2 = (b["OFF_RATING"] + a["DEF_RATING"]) / 2 * pace / 100
-        history = list(series_history or [])
-        # Custom scenario: team 1 hosts games 1, 2, 5 and 7.
-        home_advantage = 2.0 if len(history) + 1 in (1, 2, 5, 7) else -2.0
+        home_advantage = 2.0 if home == t1 else -2.0
         momentum = 0.0
         if history:
             if history[-1].winner not in (t1, t2):
@@ -87,16 +102,20 @@ class PlayoffEngine:
 
     def _game_probability(self, t1, t2, series_history=None):
         p1, p2 = self._expected_points(t1, t2, series_history)
-        exponent = max(-60, min(60, -(p1 - p2) / 8))
-        return max(.05, min(.95, 1 / (1 + math.exp(exponent))))
+        return SCORE_MARGIN.cdf(p1 - p2)
 
     def generate_game_stats(self, t1, t2, series_history=None):
         p1, p2 = self._expected_points(t1, t2, series_history)
-        t1_wins = random.random() < self._game_probability(t1, t2, series_history)
+        draw = random.random()
+        expected_margin = p1 - p2
+        t1_wins = draw < SCORE_MARGIN.cdf(expected_margin)
+        # One draw fixes both winner and margin. Sampling the winner independently
+        # of the margin made one side of the spread systematically too profitable.
+        quantile = min(1 - 1e-12, max(1e-12, 1 - draw))
+        sampled_margin = expected_margin + SCORE_MARGIN.inv_cdf(quantile)
         total = max(2, round(random.gauss(p1 + p2, 14)))
-        # Explicit winner uses the same probability as the quoted market.
-        # Bounded margin avoids an unbounded tie retry loop.
-        margin = max(1, min(total - 1, round(abs(random.gauss(abs(p1 - p2), 8)))))
+        # A positive integer margin avoids ties and keeps both scores nonnegative.
+        margin = max(1, min(total - 1, round(abs(sampled_margin))))
         loser_points = max(0, (total - margin) // 2)
         winner_points = loser_points + margin
         score1, score2 = (winner_points, loser_points) if t1_wins else (loser_points, winner_points)

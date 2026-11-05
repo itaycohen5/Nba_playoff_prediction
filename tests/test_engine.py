@@ -81,3 +81,31 @@ def test_unknown_or_identical_teams_are_not_silently_accepted(engine):
         engine.generate_game_stats("unknown", engine.east_teams[1])
     with pytest.raises(ValueError):
         engine.calculate_advanced_odds(engine.east_teams[1], engine.east_teams[1])
+
+
+def test_home_court_follows_seed_even_when_higher_seed_is_second(engine):
+    lower, higher = engine.west_teams[8], engine.west_teams[4]
+    assert engine.home_team(lower, higher, 1) == higher
+    assert engine.home_team(lower, higher, 3) == lower
+    engine.team_db[lower] = engine.team_db[higher].copy()
+    points_lower, points_higher = engine._expected_points(lower, higher)
+    assert points_higher - points_lower == pytest.approx(2.0)
+    assert engine._expected_points(higher, lower) == pytest.approx((points_higher, points_lower))
+
+
+def test_quoted_spreads_do_not_favor_a_side_in_opening_round(engine, monkeypatch):
+    samples = 2000
+    monkeypatch.setattr('backend.playoff_engine.random.gauss', lambda mean, _sigma: mean)
+    for conference in (engine.east_teams, engine.west_teams):
+        for a, b in ((1, 8), (2, 7), (3, 6), (4, 5)):
+            team1, team2 = conference[a], conference[b]
+            spread = engine.calculate_advanced_odds(team1, team2)['spread']
+            quantiles = iter((i + .5) / samples for i in range(samples))
+            monkeypatch.setattr('backend.playoff_engine.random.random', lambda: next(quantiles))
+            outcomes = {1: 0, -1: 0, 0: 0}
+            for _ in range(samples):
+                game = engine.generate_game_stats(team1, team2)
+                margin = game['t1_pts'] - game['t2_pts'] + spread['team1_spread']
+                outcomes[(margin > 0) - (margin < 0)] += 1
+            best_return = (max(outcomes[1], outcomes[-1]) * spread['odds'] + outcomes[0]) / samples
+            assert best_return < 1, (team1, team2, best_return)
