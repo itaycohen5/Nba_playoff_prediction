@@ -119,6 +119,9 @@ class APIRegressionTests(unittest.TestCase):
         with TestClient(api.app) as other:
             other.cookies.set("nba_session", code)
             self.assertEqual(other.get("/api/me").status_code, 401)
+            self.assertEqual(other.post("/api/reset-password", json={
+                "code": code, "password": "NoNumber!",
+            }).status_code, 422)
             request = {"code": code, "password": new_password}
             self.assertEqual(other.post("/api/reset-password", json=request).status_code, 200)
             self.assertEqual(other.post("/api/reset-password", json=request).status_code, 400)
@@ -160,6 +163,10 @@ class APIRegressionTests(unittest.TestCase):
         self.assertTrue(any(issue['loc'] == ['body', 'password'] for issue in details))
         self.assertTrue(all(set(issue) == {'loc', 'msg', 'type'} for issue in details))
         self.assertNotIn('"short"', response.text)
+        password_message = next(issue['msg'] for issue in details if issue['loc'] == ['body', 'password'])
+        for missing in ('לפחות 8 תווים', 'לפחות ספרה אחת', 'לפחות תו מיוחד אחד'):
+            self.assertIn(missing, password_message)
+        self.assertNotIn('לפחות אות אחת באנגלית', password_message)
 
         self.register()
         body = self.bet(amount=0)

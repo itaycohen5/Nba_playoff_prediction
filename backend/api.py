@@ -6,6 +6,7 @@ import math
 import os
 import re
 import secrets
+import string
 from collections import Counter
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -89,9 +90,25 @@ class LoginRequest(StrictModel):
             raise ValueError('סיסמה מוגבלת ל־72 בתים בקידוד UTF-8')
         return value
 
+def validate_new_password(value):
+    missing = []
+    if len(value) < 8:
+        missing.append('לפחות 8 תווים')
+    if not any(char in string.ascii_letters for char in value):
+        missing.append('לפחות אות אחת באנגלית')
+    if not any(char in string.digits for char in value):
+        missing.append('לפחות ספרה אחת')
+    if not any(char in string.punctuation for char in value):
+        missing.append('לפחות תו מיוחד אחד')
+    if missing:
+        raise ValueError('דרישות סיסמה חסרות: ' + ', '.join(missing))
+    return LoginRequest.password_bytes(value)
+
+
 class RegisterRequest(LoginRequest):
     username: str = Field(min_length=3, max_length=40)
-    password: str = Field(min_length=8, max_length=72)
+    password: str
+    _new_password = field_validator('password')(validate_new_password)
     @field_validator('username')
     @classmethod
     def valid_username(cls, value):
@@ -101,8 +118,8 @@ class RegisterRequest(LoginRequest):
 
 class PasswordResetRequest(StrictModel):
     code: str = Field(min_length=43, max_length=43, pattern=r'^[A-Za-z0-9_-]+$')
-    password: str = Field(min_length=8, max_length=72)
-    _password_bytes = field_validator('password')(LoginRequest.password_bytes)
+    password: str
+    _new_password = field_validator('password')(validate_new_password)
 
 class ActionRequest(StrictModel):
     request_id: UUID = Field(default_factory=uuid4)

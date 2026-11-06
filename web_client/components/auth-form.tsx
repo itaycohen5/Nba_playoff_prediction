@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useRef, useState } from 'react';
 import { api, parseUser, messageOf } from '@/lib/api';
 import { Brand, Notice } from './ui';
+import { PasswordRules, passwordIssues } from './password-rules';
 
 export function AuthForm({register = false}: {register?: boolean}) {
   const {t} = useLanguage();
@@ -16,7 +17,8 @@ export function AuthForm({register = false}: {register?: boolean}) {
     const name = username.trim(), bytes = new TextEncoder().encode(password).length;
     if (!name) {setError('יש להזין שם משתמש'); return;}
     if (register && !/^[\p{L}\p{N}_]{3,40}$/u.test(name)) {setError('שם משתמש: 3–40 אותיות, ספרות או קו תחתון, ללא רווחים'); return;}
-    if (register && Array.from(password).length < 8) {setError(t('נדרשת סיסמה עם לפחות 8 תווים','Use a password with at least 8 characters')); return;}
+    const missing = register ? passwordIssues(password, t) : [];
+    if (missing.length) {setError(t('דרישות סיסמה חסרות: ', 'Missing password requirements: ') + missing.join(' · ')); return;}
     if (bytes > 72) {setError(t('הסיסמה ארוכה מדי. נסו לקצר אותה.','This password is too long. Try a shorter one.')); return;}
     if (!password.length) {setError(t('יש להזין סיסמה','Enter your password')); return;}
     if (register && password !== confirm) {setError('הסיסמאות אינן תואמות'); return;}
@@ -48,7 +50,7 @@ export function AuthForm({register = false}: {register?: boolean}) {
             <input id="username" name="username" value={username} onChange={e => setUsername(e.target.value)} autoComplete="username" minLength={register ? 3 : 1} maxLength={40} required disabled={busy} aria-describedby={register ? 'username-help' : undefined}/>
             {register && <small id="username-help">{t('3–40 אותיות, ספרות או קו תחתון.','3–40 letters, numbers or underscores.')}</small>}
           </div>
-          <div className="field"><label htmlFor="password">{t('סיסמה','Password')}</label><input id="password" name="password" type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete={register ? 'new-password' : 'current-password'} minLength={register ? 8 : 1} required disabled={busy} aria-describedby={register ? 'password-help' : undefined}/>{register && <small id="password-help">{t('לפחות 8 תווים. אפשר להשתמש במשפט קצר.','At least 8 characters. A short phrase works well.')}</small>}</div>
+          <div className="field"><label htmlFor="password">{t('סיסמה','Password')}</label><input id="password" name="password" type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete={register ? 'new-password' : 'current-password'} required disabled={busy} aria-describedby="password-help"/><PasswordRules id="password-help" value={password}/></div>
           {register && <div className="field"><label htmlFor="confirm">{t('אימות סיסמה','Confirm password')}</label><input id="confirm" name="confirm" type="password" value={confirm} onChange={e => setConfirm(e.target.value)} autoComplete="new-password" required disabled={busy}/></div>}
           <button className="button primary full" disabled={busy}>{busy ? t('מתחברים…','Signing you in…') : register ? t('יצירת חשבון','Create account') : t('כניסה לחשבון','Sign in')}</button>
         </form>

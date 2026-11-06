@@ -5,6 +5,7 @@ import { useRef, useState, type FormEvent } from 'react';
 import { Brand, Notice } from '@/components/ui';
 import { LanguageSwitcher, useLanguage } from '@/lib/i18n';
 import { api, messageOf, record } from '@/lib/api';
+import { PasswordRules, passwordIssues } from '@/components/password-rules';
 
 export default function ResetPasswordPage() {
   const {t} = useLanguage();
@@ -12,18 +13,23 @@ export default function ResetPasswordPage() {
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
   const [error, setError] = useState('');
+  const [password, setPassword] = useState('');
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (submitting.current) return;
     const form = new FormData(event.currentTarget);
     const code = String(form.get('code') ?? '').trim();
-    const password = String(form.get('password') ?? '');
     if (!/^[A-Za-z0-9_-]{43}$/.test(code)) {
       setError('קוד האיפוס אינו תקף או שפג תוקפו');
       return;
     }
-    if (Array.from(password).length < 8 || new TextEncoder().encode(password).length > 72) {
+    const missing = passwordIssues(password, t);
+    if (missing.length) {
+      setError(t('דרישות סיסמה חסרות: ', 'Missing password requirements: ') + missing.join(' · '));
+      return;
+    }
+    if (new TextEncoder().encode(password).length > 72) {
       setError('נדרשת סיסמה עם לפחות 8 תווים ועד 72 בתים (תווים בעברית תופסים יותר מבית אחד)');
       return;
     }
@@ -59,7 +65,7 @@ export default function ResetPasswordPage() {
           <form onSubmit={submit} className="form-stack" aria-busy={busy}>
             {error && <Notice error>{error}</Notice>}
             <div className="field"><label htmlFor="reset-code">{t('קוד איפוס','Reset code')}</label><input id="reset-code" name="code" dir="ltr" autoComplete="one-time-code" spellCheck={false} required disabled={busy}/></div>
-            <div className="field"><label htmlFor="new-password">{t('סיסמה חדשה','New password')}</label><input id="new-password" name="password" type="password" autoComplete="new-password" minLength={8} maxLength={72} required disabled={busy}/></div>
+            <div className="field"><label htmlFor="new-password">{t('סיסמה חדשה','New password')}</label><input id="new-password" name="password" type="password" value={password} onChange={event => setPassword(event.target.value)} autoComplete="new-password" required disabled={busy} aria-describedby="reset-password-help"/><PasswordRules id="reset-password-help" value={password}/></div>
             <div className="field"><label htmlFor="confirm-password">{t('אימות סיסמה','Confirm password')}</label><input id="confirm-password" name="confirm" type="password" autoComplete="new-password" required disabled={busy}/></div>
             <button className="button primary full" disabled={busy}>{busy ? t('שומרים…','Saving…') : t('שמירת סיסמה','Save password')}</button>
           </form>}

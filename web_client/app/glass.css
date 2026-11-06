@@ -6,6 +6,17 @@
   --glass-shadow: 0 16px 44px rgb(0 0 0 / .24), inset 0 1px rgb(255 255 255 / .07);
 }
 
+.password-rules {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.password-rules li { display: flex; align-items: baseline; gap: 8px; }
+.password-rules [data-met="true"] { color: #91e8b4; }
+.password-rule-mark { inline-size: 1em; flex: none; }
+
 .site-content {
   background: radial-gradient(ellipse at 18% 12%, #202e53 0%, transparent 42rem),
               radial-gradient(ellipse at 90% 22%, #392c29 0%, transparent 39rem), #080d18;
