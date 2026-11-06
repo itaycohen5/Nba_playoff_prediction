@@ -24,6 +24,7 @@ from fastapi.testclient import TestClient
 from backend import api
 from backend.db.database import Base, SessionLocal, engine
 from backend.db.models import AuthSession, Bet, GameHistory, Tournament, User, utcnow
+from backend.db.recovery import issue_recovery_code, recovery_key
 
 if Path(engine.url.database).resolve() != TEST_DATABASE.resolve():
     raise RuntimeError("Refusing to run against a non-test database")
@@ -101,6 +102,32 @@ class APIRegressionTests(unittest.TestCase):
             "lines": self.client.get("/api/betting-lines").json(),
             "futures_lines": self.client.get("/api/futures-lines").json()["futures_lines"],
         })
+
+    def test_password_recovery_rotates_credentials_and_revokes_sessions(self):
+        user = self.register().json()
+        with SessionLocal.begin() as db:
+            expired = issue_recovery_code(db, "qa_user")
+            db.flush()
+            db.get(AuthSession, recovery_key(expired)).expires_at = utcnow() - timedelta(seconds=1)
+        new_password = "NewQaPassw0rd!"
+        self.assertEqual(self.client.post("/api/reset-password", json={
+            "code": expired, "password": new_password,
+        }).status_code, 400)
+        self.assertEqual(self.me()["id"], user["id"])
+        with SessionLocal.begin() as db:
+            code = issue_recovery_code(db, "qa_user")
+        with TestClient(api.app) as other:
+            other.cookies.set("nba_session", code)
+            self.assertEqual(other.get("/api/me").status_code, 401)
+            request = {"code": code, "password": new_password}
+            self.assertEqual(other.post("/api/reset-password", json=request).status_code, 200)
+            self.assertEqual(other.post("/api/reset-password", json=request).status_code, 400)
+        self.assertEqual(self.client.get("/api/me").status_code, 401)
+        self.assertEqual(self.client.post("/api/login", json={
+            "username": "qa_user", "password": "QaPassw0rd!",
+        }).status_code, 401)
+        login = self.client.post("/api/login", json={"username": "qa_user", "password": new_password})
+        self.assertEqual(login.json(), user)
 
     def test_session_login_logout_and_wrong_password(self):
         self.assertEqual(self.client.get("/api/me").status_code, 401)

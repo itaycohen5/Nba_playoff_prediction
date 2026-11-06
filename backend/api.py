@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from backend.db.auth import get_password_hash, verify_password
 from backend.db.database import get_db, initialize_database
 from backend.db.models import AuthSession, Bet, GameHistory, LoginAttempt, Mutation, Tournament, User, utcnow
+from backend.db.recovery import recovery_key
 from backend.playoff_engine import PlayoffEngine
 
 logger = logging.getLogger(__name__)
@@ -97,6 +98,11 @@ class RegisterRequest(LoginRequest):
         if len(value) < 3 or not re.fullmatch(r'\w+', value, re.UNICODE):
             raise ValueError('שם משתמש: 3–40 אותיות, ספרות או קו תחתון')
         return value
+
+class PasswordResetRequest(StrictModel):
+    code: str = Field(min_length=43, max_length=43, pattern=r'^[A-Za-z0-9_-]+$')
+    password: str = Field(min_length=8, max_length=72)
+    _password_bytes = field_validator('password')(LoginRequest.password_bytes)
 
 class ActionRequest(StrictModel):
     request_id: UUID = Field(default_factory=uuid4)
@@ -383,6 +389,23 @@ def login(req: LoginRequest, response: Response, request: Request, db: Session =
     issue_session(db, user, response)
     db.commit()
     return wallet(user)
+
+@app.post('/api/reset-password')
+def reset_password(req: PasswordResetRequest, response: Response, db: Session = Depends(get_db)):
+    key = recovery_key(req.code)
+    recovery = db.get(AuthSession, key)
+    invalid = HTTPException(400, 'קוד האיפוס אינו תקף או שפג תוקפו')
+    if recovery is None or recovery.expires_at <= utcnow():
+        raise invalid
+    user = db.query(User).filter_by(id=recovery.user_id).with_for_update().first()
+    recovery = db.get(AuthSession, key, populate_existing=True)
+    if user is None or recovery is None or recovery.expires_at <= utcnow():
+        raise invalid
+    user.hashed_password = get_password_hash(req.password)
+    db.query(AuthSession).filter_by(user_id=user.id).delete(synchronize_session=False)
+    db.commit()
+    response.delete_cookie(COOKIE, path='/api', secure=COOKIE_SECURE, httponly=True, samesite='strict')
+    return {'status': 'ok'}
 
 @app.post('/api/logout')
 def logout(request: Request, response: Response, user: User = Depends(current_user), db: Session = Depends(get_db)):

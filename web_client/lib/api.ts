@@ -77,7 +77,7 @@ export async function api<T>(path: string, parse: Parser<T>, body?: unknown, tim
       headers: body === undefined ? undefined : {'Content-Type': 'application/json'}, body: body === undefined ? undefined : JSON.stringify(body), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout) });
   } catch (error) {
     if (signal?.aborted) throw error;
-    if (path === '/login' || path === '/register') {
+    if (path === '/login' || path === '/register' || path === '/reset-password') {
       throw new ApiError('לא התקבלה תשובה משירות הכניסה. בדקו את החיבור ונסו שוב.');
     }
     throw new ApiError('לא התקבלה תשובה מהשרת. בפעולת הימור אפשר לנסות שוב עם אותם פרטים ללא חיוב כפול.');
@@ -85,7 +85,7 @@ export async function api<T>(path: string, parse: Parser<T>, body?: unknown, tim
   const value: unknown = await response.json().catch(() => null);
   if (!response.ok) {
     const detail = value && typeof value === 'object' && 'detail' in value ? value.detail : null;
-    if ((path === '/login' || path === '/register') && response.status >= 500) {
+    if ((path === '/login' || path === '/register' || path === '/reset-password') && response.status >= 500) {
       throw new ApiError('שירות הכניסה אינו זמין כרגע. נסו שוב בעוד רגע.', response.status);
     }
     const message = response.status >= 500 ? 'השירות אינו זמין כרגע. נסו שוב בעוד רגע.' : Array.isArray(detail) ? detail.map(v => v && typeof v === 'object' && 'msg' in v ? String(v.msg) : 'קלט לא תקין').join(' · ') : typeof detail === 'string' ? detail : 'הפעולה לא הושלמה. יש לבדוק את הפרטים ולנסות שוב.';
@@ -102,6 +102,7 @@ export function wagerValue(raw: string, balance: number): number {
 export const messageOf = (error: unknown) => error instanceof Error ? error.message : 'הפעולה נכשלה';
 
 const messageTranslations: Record<string, string> = {
+  "קוד האיפוס אינו תקף או שפג תוקפו": "The reset code is invalid or has expired",
   "השרת החזיר נתונים לא תקינים": "The server returned invalid data",
   "שדה טקסט חסר בתשובת השרת": "A text field is missing from the response",
   "נתון מספרי לא תקין": "Invalid numeric data",

@@ -52,6 +52,7 @@ export function AuthForm({register = false}: {register?: boolean}) {
           {register && <div className="field"><label htmlFor="confirm">{t('אימות סיסמה','Confirm password')}</label><input id="confirm" name="confirm" type="password" value={confirm} onChange={e => setConfirm(e.target.value)} autoComplete="new-password" required disabled={busy}/></div>}
           <button className="button primary full" disabled={busy}>{busy ? t('מתחברים…','Signing you in…') : register ? t('יצירת חשבון','Create account') : t('כניסה לחשבון','Sign in')}</button>
         </form>
+        {!register && <p className="auth-switch"><Link href="/reset-password">{t('שכחת סיסמה?','Forgot your password?')}</Link></p>}
         <p className="auth-switch">{register ? t('כבר יש לך חשבון?','Already have an account?') : t('אין לך חשבון עדיין?','No account yet?')} <Link href={register ? '/login' : '/register'}>{register ? t('כניסה','Sign in') : t('יצירת חשבון','Create an account')}</Link></p>
       </section>
     </main>
