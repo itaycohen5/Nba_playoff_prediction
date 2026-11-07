@@ -1,6 +1,6 @@
 'use client';
 import Link from 'next/link';
-import Image from 'next/image';
+import {ProductPreview} from '@/components/product-preview';
 import {useState} from 'react';
 import {Brand} from '@/components/ui';
 import {LanguageSwitcher,useLanguage} from '@/lib/i18n';
@@ -14,7 +14,7 @@ function DemoMarket(){
  return <section className="tp-demo" data-ui aria-labelledby="demo-title"><div className="tp-demo-head"><h2 id="demo-title">{t('מנסים תחזית','Try a forecast')}</h2><span>{t('הדגמת מודל','Model demo')}</span></div><p>{t('משחק פתיחה · ארבעה ניצחונות כדי להעפיל','Opening game · Four wins to advance')}</p><div className="tp-demo-choices" role="group" aria-label={t('בחירת מנצחת להדגמה','Choose a demonstration winner')}>{teams.map((team,index)=><button type="button" key={team} aria-pressed={selected===index} onClick={()=>setSelected(index)}><span dir="ltr">{team}</span><strong>{prices[index].toFixed(2)}</strong></button>)}</div><label htmlFor="demo-amount">{t('סכום מדומה · 1–1,000','Virtual stake · 1–1,000')}</label><input id="demo-amount" inputMode="decimal" value={amount} onChange={e=>setAmount(e.target.value)} aria-invalid={!valid} aria-describedby="demo-help" maxLength={7}/><div className="tp-demo-return" aria-live="polite"><span>{t('החזר אפשרי כולל הסכום','Possible return including stake')}</span><output dir="ltr">{payout===null?'—':payout.toFixed(2)}</output></div><p id="demo-help">{valid?t('נתוני מודל היסטוריים. הדגמה בלבד; לא נשלחת תחזית.','Historical model data. Demo only; no forecast is submitted.'):t('יש להזין 1–1,000, עד שתי ספרות אחרי הנקודה.','Enter 1–1,000, with up to two decimal places.')}</p></section>;
 }
 export default function Home(){
- const {t}=useLanguage();const [view,setView]=useState(0);
+ const {t}=useLanguage();const [view,setView]=useState(2);
  return <div className="tp-page"><a href="#main" className="skip-link">{t('דלג לתוכן','Skip to content')}</a><header className="tp-nav tp-wrap"><Brand/><LanguageSwitcher/><Link className="text-link" href="/login">{t('כניסה','Sign in')} ↗</Link></header><main id="main" tabIndex={-1}>
  <section className="tp-hero">
    <svg className="broadcast-court" viewBox="0 0 800 420" fill="none" aria-hidden="true" focusable="false">
@@ -38,7 +38,7 @@ export default function Home(){
      <div><dt>{t('אלופה','Champion')}</dt><dd>1</dd></div>
    </dl>
  </section>
- <section className="tp-showcase tp-wrap" aria-labelledby="showcase-title"><div className="tp-section-head"><h2 id="showcase-title">{t('רואים את כל המגרש.','Read the entire field.')}</h2><p>{t('מבט מבפנים על הטורניר האישי שלך.','Inside your personal tournament.')}</p></div><div className="tp-view-controls" role="group" aria-label={t('בחירת תצוגת מוצר','Choose a product view')}>{views.map((item,index)=><button key={item[0]} type="button" onClick={()=>setView(index)} aria-pressed={index===view} aria-controls="product-view">{t(item[1],item[2])}</button>)}</div><div id="product-view" className="tp-product-view" aria-live="polite"><div className="tp-product-picture" data-ui>{views.map((item,index)=><Image unoptimized key={item[0]} hidden={index!==view} src={`/product/${item[0]}.jpg`} width={1280} height={800} alt={t(`צילום מתוך האתר: ${item[1]}`,`Actual app screenshot: ${item[2]}`)}/>)}</div><p>{t(views[view][3],views[view][4])}</p></div></section>
+ <section className="tp-showcase tp-wrap" aria-labelledby="showcase-title"><div className="tp-section-head"><h2 id="showcase-title">{t('רואים את כל המגרש.','Read the entire field.')}</h2><p>{t('תצוגת ממשק חיה עם קבוצות ונתוני הדגמה לפתיחת עונה.','A live interface preview with opening-season demo data.')}</p></div><div className="tp-view-controls" role="group" aria-label={t('בחירת תצוגת מוצר','Choose a product view')}>{views.map((item,index)=><button key={item[0]} type="button" onClick={()=>setView(index)} aria-pressed={index===view} aria-controls="product-view">{t(item[1],item[2])}</button>)}</div><div id="product-view" className="tp-product-view" aria-live="polite"><ProductPreview view={views[view][0]}/><p>{t(views[view][3],views[view][4])}</p></div></section>
  <section className="tp-process" aria-label={t('איך משחקים','How to play')}><div className="tp-wrap">{[
  ['קוראים את היחס.','Read the price.','פותחים את המשחק הבא. בוחנים מי משחקת בבית ומה המודל מציע לכל שוק.','Open the next game. Check the home team and the model price for each market.'],
  ['בוחרים צד.','Pick your side.','מגדירים סכום מתוך היתרה המדומה ובודקים את ההחזר האפשרי לפני האישור.','Choose a virtual stake and review the possible return before confirming.'],

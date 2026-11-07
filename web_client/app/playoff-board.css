@@ -1,0 +1,99 @@
+/* Reference-led playoff board, using the site's existing frosted navy surfaces. */
+.playoff-bracket { padding:24px 12px 12px; background-color:#101a2ce6; background-image:radial-gradient(#8ba7c51b .8px,transparent .8px); background-size:7px 7px; }
+.page-main:has(>.playoff-bracket) { inline-size:min(1760px,calc(100% - 48px)); }
+.playoff-bracket .bracket-stage { --wing-title:72px; --round-title:48px; --court-depth:720px; min-inline-size:1240px; }
+.playoff-bracket .bracket-wing>h2,.playoff-bracket .bracket-center>h2 { height:var(--wing-title); min-height:0; margin:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; font-size:15px; color:#f5f1e7; }
+.playoff-bracket .bracket-wing>h2>span { font-size:11px; letter-spacing:.16em; color:#a9bcd7; font-weight:500; }
+.playoff-bracket .bracket-column h3 { height:var(--round-title); margin:0; padding:4px; font-size:11px; line-height:1.4; }
+.playoff-bracket .bracket-pairs { padding-inline:8px; }
+.playoff-bracket .bracket-center-match { padding-inline:8px; margin-block-start:var(--round-title); }
+.playoff-bracket .bracket-connectors { top:calc(var(--wing-title) + var(--round-title)); }
+.playoff-bracket .bracket-connectors path { stroke-width:1.6; stroke:#9aabc2; opacity:.9; }
+.playoff-bracket .bracket-connectors .bracket-final-lines { stroke:#efc976; opacity:1; }
+.playoff-bracket .playoff-wordmark>span { color:#efc976; font-size:11px; letter-spacing:.34em; }
+.playoff-bracket .playoff-wordmark>b { font-size:26px; font-style:italic; letter-spacing:-.06em; }
+.playoff-match { min-width:0; overflow:hidden; border:1px solid #8099be55; border-radius:9px; background:#152035; padding:3px; box-shadow:0 4px 16px #0004,inset 0 1px #ffffff12; }
+.playoff-team { position:relative; isolation:isolate; display:flex; gap:5px; align-items:center; min-height:66px; padding:7px 6px; border-radius:5px; background:#101d30; border-inline-start:3px solid var(--team-color); color:#f8f5ed; }
+.playoff-team+.playoff-team { margin-top:3px; }
+.playoff-team::before { content:""; position:absolute; z-index:-1; inset:0; background:linear-gradient(100deg,color-mix(in srgb,var(--team-color) 32%,transparent),transparent 90%); pointer-events:none; }
+.playoff-team::after { content:""; position:absolute; z-index:-1; inset:0 0 0 auto; width:90px; opacity:.15; background-image:var(--team-mark); background-size:100px 100px; background-repeat:no-repeat; background-position:center; pointer-events:none; }
+.team-logo { display:block; width:48px; height:48px; flex:none; object-fit:contain; filter:drop-shadow(0 2px 3px #0005); }
+.team-logo-fallback { display:grid; place-items:center; border:1px dashed #91a3bd77; border-radius:6px; font-size:11px; color:#a9b8ca; }
+.playoff-seed { width:10px; flex:none; font-size:11px; color:#d8e3f3; text-align:center; font-variant-numeric:tabular-nums; }
+.playoff-team-name { flex:1; min-width:0; text-align:start; line-height:1.2; }
+.playoff-team-name small { display:block; font-size:11px; color:#d4deeb; margin-bottom:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.playoff-team-name b { display:block; font-size:14px; font-weight:750; overflow-wrap:anywhere; }
+.playoff-score { flex:none; min-width:12px; font-size:18px; font-variant-numeric:tabular-nums; text-align:center; }
+.playoff-team[data-winner=true] { box-shadow:inset 0 0 0 1px #f4c469b3; }
+.playoff-team[data-winner=true] .playoff-score { color:#ffe1a5; }
+.playoff-team[data-empty=true] { border-inline-start-color:#3e526f; background:#142034; color:#c2cde0; }
+.playoff-team[data-empty=true] .playoff-team-name b { font-size:11px; font-weight:500; }
+.playoff-team[data-empty=true] .playoff-seed { display:none; }
+.playoff-team[data-empty=true] .team-logo { width:32px; height:32px; }
+.playoff-team[data-empty=true] .playoff-score { color:#8ba0ba; font-size:14px; }
+.playoff-finals-block { position:relative; color:#f4c469; text-align:center; }
+.playoff-finals-block>svg { position:absolute; bottom:calc(100% + 50px); left:calc(50% - 19px); }
+.playoff-finals-block>h3 { position:absolute; bottom:calc(100% + 12px); left:0; width:100%; margin:0; font-size:14px; }
+.playoff-finals-block .playoff-match { border-color:#d4a64b99; }
+.playoff-finals-note,.playoff-champion { position:absolute; top:100%; width:100%; margin:14px 0 0; font-size:11px; line-height:1.6; color:#e8d8b7; }
+.playoff-champion .team-logo { width:54px; height:54px; margin:8px auto; }
+.playoff-champion strong { display:block; font-size:15px; }
+
+/* The home preview uses working UI, not screenshots that can go stale. */
+.product-preview { overflow:hidden; border:1px solid #9bb5d344; border-radius:12px; background:#101a2be6; box-shadow:0 16px 44px #0003,inset 0 1px #ffffff12; }
+.preview-toolbar { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:18px 24px; border-bottom:1px solid #849bbb33; font-size:12px; color:#b9c8dd; background:#0c1628aa; }
+.preview-brand { font-weight:800; letter-spacing:.04em; color:#f4f1e8; }
+.preview-brand b { display:inline-block; margin-inline-start:12px; font-size:11px; letter-spacing:0; font-weight:500; color:#f4c469; }
+.preview-scroll-note { margin:0; padding:12px 24px 0; color:#c2cfe1; font-size:12px; }
+.product-preview .playoff-bracket { border:0; border-radius:0; box-shadow:none; }
+.product-preview .bracket-stage { --court-depth:640px; }
+.preview-court,.preview-ledger { padding:28px; }
+.preview-heading { display:flex; align-items:center; justify-content:space-between; gap:20px; margin-bottom:24px; }
+.preview-heading p,.preview-market-panel>p:first-child { color:#f4c469; font-size:11px; margin:0 0 10px; }
+.preview-heading h3,.preview-market-panel h3 { margin:0; font-size:clamp(22px,3vw,36px); line-height:1.25; color:#f5f1e7; }
+.preview-heading>span { color:#bac9df; font-size:12px; }
+.preview-match-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:16px; margin-bottom:24px; }
+.preview-match-grid h4 { margin:0 0 8px; font-weight:500; font-size:11px; color:#a8bbd5; }
+.preview-match-grid .playoff-team-name b { font-size:14px; }
+.preview-match-grid .team-logo { width:48px; height:48px; }
+.preview-market-teams { display:flex; align-items:center; justify-content:center; gap:36px; background:#0a1426aa; padding:40px 24px; }
+.preview-market-teams>div { min-width:0; text-align:center; }
+.preview-market-teams .team-logo { width:clamp(74px,10vw,130px); height:clamp(74px,10vw,130px); margin:0 auto 16px; }
+.preview-market-teams small { font-size:12px; color:#b5c5dc; }
+.preview-market-teams h3 { margin:4px 0; font-size:24px; color:#f7f2e5; }
+.preview-markets { display:grid; grid-template-columns:1fr 1.15fr; }
+.preview-market-panel { padding:36px; }
+.preview-market-panel>p { font-size:13px; color:#bac9dc; }
+.preview-market-tabs { display:flex; gap:8px; margin:24px 0 16px; }
+.preview-market-tabs button { background:transparent; color:#bdcce1; border:1px solid #6d85a555; padding:10px 14px; min-height:44px; border-radius:5px; font:inherit; font-size:13px; }
+.preview-market-tabs button[aria-pressed=true] { border-color:#f4c469; color:#ffe2ac; }
+.preview-quotes { display:grid; gap:8px; }
+.preview-quotes button { display:flex; align-items:center; gap:12px; width:100%; min-height:60px; background:#111f35; color:#f6f1e5; border:1px solid #7994ba55; border-radius:6px; padding:10px 14px; font:inherit; font-size:14px; }
+.preview-quotes button[aria-pressed=true] { border-color:#f4c469; background:#2f2b25; }
+.preview-quotes .team-logo { width:36px; height:36px; }
+.preview-quotes strong { margin-inline-start:auto; font-size:21px; font-variant-numeric:tabular-nums; }
+.preview-ledger-head { display:grid; grid-template-columns:2fr 1fr 1fr 1fr; gap:12px; padding:16px 0; border-block:1px solid #7b92b344; color:#c6d4e7; font-size:12px; }
+.preview-empty { padding:56px 24px; text-align:center; }
+.preview-empty h4 { font-size:24px; margin:0 0 16px; color:#f6f0e4; }
+.preview-empty p { max-width:520px; margin:0 auto 24px; font-size:14px; color:#bbcbe0; }
+.product-preview .team-logo { max-width:none; }
+@media(max-width:1000px) {
+ .preview-match-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+ .preview-markets { grid-template-columns:1fr; }
+ .preview-market-teams { padding:28px; }
+ .preview-market-teams .team-logo { width:90px; height:90px; }
+}
+@media(max-width:600px) {
+ .preview-toolbar { padding:14px; flex-wrap:wrap; gap:8px; }
+ .preview-court,.preview-ledger,.preview-market-panel { padding:20px 14px; }
+ .preview-match-grid { grid-template-columns:1fr; gap:14px; }
+ .preview-heading { flex-direction:column; align-items:flex-start; gap:10px; }
+ .preview-market-teams h3 { font-size:19px; }
+ .preview-empty { padding:32px 4px; }
+ .preview-empty h4 { font-size:21px; }
+ .preview-scroll-note { padding-inline:14px; }
+ .playoff-bracket { padding-inline:4px; }
+}
+html[data-a11y-contrast=true] .playoff-team { background:#000; border-color:#fff; color:#fff; }
+html[data-a11y-contrast=true] .playoff-team::before,html[data-a11y-contrast=true] .playoff-team::after { display:none; }
+html[data-a11y-contrast=true] .playoff-team-name small,html[data-a11y-contrast=true] .playoff-seed { color:#fff; }

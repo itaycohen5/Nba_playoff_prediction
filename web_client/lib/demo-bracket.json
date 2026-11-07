@@ -1,0 +1,169 @@
+{
+  "west": {
+    "r1": [
+      {
+        "t1": {
+          "name": "Oklahoma City Thunder",
+          "wins": 0
+        },
+        "t2": {
+          "name": "Phoenix Suns",
+          "wins": 0
+        }
+      },
+      {
+        "t1": {
+          "name": "Los Angeles Lakers",
+          "wins": 0
+        },
+        "t2": {
+          "name": "Houston Rockets",
+          "wins": 0
+        }
+      },
+      {
+        "t1": {
+          "name": "Denver Nuggets",
+          "wins": 0
+        },
+        "t2": {
+          "name": "Minnesota Timberwolves",
+          "wins": 0
+        }
+      },
+      {
+        "t1": {
+          "name": "San Antonio Spurs",
+          "wins": 0
+        },
+        "t2": {
+          "name": "Portland Trail Blazers",
+          "wins": 0
+        }
+      }
+    ],
+    "r2": [
+      {
+        "t1": {
+          "name": "TBD",
+          "wins": 0
+        },
+        "t2": {
+          "name": "TBD",
+          "wins": 0
+        }
+      },
+      {
+        "t1": {
+          "name": "TBD",
+          "wins": 0
+        },
+        "t2": {
+          "name": "TBD",
+          "wins": 0
+        }
+      }
+    ],
+    "r3": [
+      {
+        "t1": {
+          "name": "TBD",
+          "wins": 0
+        },
+        "t2": {
+          "name": "TBD",
+          "wins": 0
+        }
+      }
+    ]
+  },
+  "east": {
+    "r1": [
+      {
+        "t1": {
+          "name": "Detroit Pistons",
+          "wins": 0
+        },
+        "t2": {
+          "name": "Orlando Magic",
+          "wins": 0
+        }
+      },
+      {
+        "t1": {
+          "name": "New York Knicks",
+          "wins": 0
+        },
+        "t2": {
+          "name": "Atlanta Hawks",
+          "wins": 0
+        }
+      },
+      {
+        "t1": {
+          "name": "Cleveland Cavaliers",
+          "wins": 0
+        },
+        "t2": {
+          "name": "Toronto Raptors",
+          "wins": 0
+        }
+      },
+      {
+        "t1": {
+          "name": "Boston Celtics",
+          "wins": 0
+        },
+        "t2": {
+          "name": "Philadelphia 76ers",
+          "wins": 0
+        }
+      }
+    ],
+    "r2": [
+      {
+        "t1": {
+          "name": "TBD",
+          "wins": 0
+        },
+        "t2": {
+          "name": "TBD",
+          "wins": 0
+        }
+      },
+      {
+        "t1": {
+          "name": "TBD",
+          "wins": 0
+        },
+        "t2": {
+          "name": "TBD",
+          "wins": 0
+        }
+      }
+    ],
+    "r3": [
+      {
+        "t1": {
+          "name": "TBD",
+          "wins": 0
+        },
+        "t2": {
+          "name": "TBD",
+          "wins": 0
+        }
+      }
+    ]
+  },
+  "finals": {
+    "t1": {
+      "name": "TBD",
+      "wins": 0
+    },
+    "t2": {
+      "name": "TBD",
+      "wins": 0
+    }
+  },
+  "champion": null
+}

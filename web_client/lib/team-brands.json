@@ -1,0 +1,130 @@
+{
+  "Oklahoma City Thunder": {
+    "abbreviation": "OKC",
+    "logo": "/teams/okc.svg",
+    "city": "Oklahoma City",
+    "nickname": "Thunder",
+    "color": "#007AC1",
+    "seed": 1
+  },
+  "San Antonio Spurs": {
+    "abbreviation": "SAS",
+    "logo": "/teams/sas.svg",
+    "city": "San Antonio",
+    "nickname": "Spurs",
+    "color": "#8496A4",
+    "seed": 2
+  },
+  "Denver Nuggets": {
+    "abbreviation": "DEN",
+    "logo": "/teams/den.svg",
+    "city": "Denver",
+    "nickname": "Nuggets",
+    "color": "#FEC524",
+    "seed": 3
+  },
+  "Los Angeles Lakers": {
+    "abbreviation": "LAL",
+    "logo": "/teams/lal.svg",
+    "city": "Los Angeles",
+    "nickname": "Lakers",
+    "color": "#FDB927",
+    "seed": 4
+  },
+  "Houston Rockets": {
+    "abbreviation": "HOU",
+    "logo": "/teams/hou.svg",
+    "city": "Houston",
+    "nickname": "Rockets",
+    "color": "#CE1141",
+    "seed": 5
+  },
+  "Minnesota Timberwolves": {
+    "abbreviation": "MIN",
+    "logo": "/teams/min.svg",
+    "city": "Minnesota",
+    "nickname": "Timberwolves",
+    "color": "#78BE20",
+    "seed": 6
+  },
+  "Portland Trail Blazers": {
+    "abbreviation": "POR",
+    "logo": "/teams/por.svg",
+    "city": "Portland",
+    "nickname": "Trail Blazers",
+    "color": "#E03A3E",
+    "seed": 7
+  },
+  "Phoenix Suns": {
+    "abbreviation": "PHX",
+    "logo": "/teams/phx.svg",
+    "city": "Phoenix",
+    "nickname": "Suns",
+    "color": "#E56020",
+    "seed": 8
+  },
+  "Detroit Pistons": {
+    "abbreviation": "DET",
+    "logo": "/teams/det.svg",
+    "city": "Detroit",
+    "nickname": "Pistons",
+    "color": "#C8102E",
+    "seed": 1
+  },
+  "Boston Celtics": {
+    "abbreviation": "BOS",
+    "logo": "/teams/bos.svg",
+    "city": "Boston",
+    "nickname": "Celtics",
+    "color": "#007A33",
+    "seed": 2
+  },
+  "Cleveland Cavaliers": {
+    "abbreviation": "CLE",
+    "logo": "/teams/cle.svg",
+    "city": "Cleveland",
+    "nickname": "Cavaliers",
+    "color": "#860038",
+    "seed": 3
+  },
+  "New York Knicks": {
+    "abbreviation": "NYK",
+    "logo": "/teams/nyk.svg",
+    "city": "New York",
+    "nickname": "Knicks",
+    "color": "#F58426",
+    "seed": 4
+  },
+  "Atlanta Hawks": {
+    "abbreviation": "ATL",
+    "logo": "/teams/atl.svg",
+    "city": "Atlanta",
+    "nickname": "Hawks",
+    "color": "#E03A3E",
+    "seed": 5
+  },
+  "Toronto Raptors": {
+    "abbreviation": "TOR",
+    "logo": "/teams/tor.svg",
+    "city": "Toronto",
+    "nickname": "Raptors",
+    "color": "#CE1141",
+    "seed": 6
+  },
+  "Philadelphia 76ers": {
+    "abbreviation": "PHI",
+    "logo": "/teams/phi.svg",
+    "city": "Philadelphia",
+    "nickname": "76ers",
+    "color": "#006BB6",
+    "seed": 7
+  },
+  "Orlando Magic": {
+    "abbreviation": "ORL",
+    "logo": "/teams/orl.svg",
+    "city": "Orlando",
+    "nickname": "Magic",
+    "color": "#0077C0",
+    "seed": 8
+  }
+}
