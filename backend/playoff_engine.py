@@ -9,6 +9,9 @@ from types import SimpleNamespace
 
 SCORE_MARGIN = NormalDist(sigma=12)
 
+def odds_for_probability(probability):
+    return round(max(1.01, .95 / max(.000001, probability)), 2)
+
 WEST_SEEDING = [
     "Oklahoma City Thunder", "San Antonio Spurs", "Denver Nuggets", "Los Angeles Lakers",
     "Houston Rockets", "Minnesota Timberwolves", "Portland Trail Blazers", "Phoenix Suns",
@@ -113,10 +116,12 @@ class PlayoffEngine:
         # of the margin made one side of the spread systematically too profitable.
         quantile = min(1 - 1e-12, max(1e-12, 1 - draw))
         sampled_margin = expected_margin + SCORE_MARGIN.inv_cdf(quantile)
-        total = max(2, round(random.gauss(p1 + p2, 14)))
+        total_draw = random.gauss(p1 + p2, 14)
+        total = max(2, round(total_draw))
         # A positive integer margin avoids ties and keeps both scores nonnegative.
         margin = max(1, min(total - 1, round(abs(sampled_margin))))
-        loser_points = max(0, (total - margin) // 2)
+        # Round to the nearest attainable total at this margin, not always down.
+        loser_points = max(0, round((total_draw - margin) / 2))
         winner_points = loser_points + margin
         score1, score2 = (winner_points, loser_points) if t1_wins else (loser_points, winner_points)
         return {
@@ -126,9 +131,8 @@ class PlayoffEngine:
             "total_points": score1 + score2,
         }
 
-    def calculate_advanced_odds(self, t1, t2, series_history=None):
+    def series_win_probability(self, t1, t2, series_history=None):
         history = list(series_history or [])
-        probability = self._game_probability(t1, t2, history)
         wins1 = sum(g.winner == t1 for g in history)
         wins2 = sum(g.winner == t2 for g in history)
         if len(history) > 7 or max(wins1, wins2) >= 4 or wins1 + wins2 != len(history):
@@ -146,16 +150,17 @@ class PlayoffEngine:
             p = self._game_probability(t1, t2, synthetic)
             return p * series_probability(w1 + 1, w2, t1) + (1 - p) * series_probability(w1, w2 + 1, t2)
 
-        series_p = series_probability(wins1, wins2, history[-1].winner if history else "")
+        return series_probability(wins1, wins2, history[-1].winner if history else "")
 
-        def price(p):
-            return round(max(1.01, .95 / max(.000001, p)), 2)
-
+    def calculate_advanced_odds(self, t1, t2, series_history=None):
+        history = list(series_history or [])
+        probability = self._game_probability(t1, t2, history)
+        series_p = self.series_win_probability(t1, t2, history)
         p1, p2 = self._expected_points(t1, t2, history)
         spread = round((p1 - p2) * 2) / 2
         return {
-            "moneyline": {t1: price(probability), t2: price(1 - probability)},
-            "series_winner": {t1: price(series_p), t2: price(1 - series_p)},
+            "moneyline": {t1: odds_for_probability(probability), t2: odds_for_probability(1 - probability)},
+            "series_winner": {t1: odds_for_probability(series_p), t2: odds_for_probability(1 - series_p)},
             "spread": {"team1_spread": -spread, "team2_spread": spread, "odds": 1.90},
             "over_under_points": {"line": round((p1 + p2) * 2) / 2, "over_odds": 1.90, "under_odds": 1.90},
         }

@@ -12,7 +12,10 @@ export function useProtected<T>(load: (signal?: AbortSignal) => Promise<T>) {
       if (version === sequence.current && !signal?.aborted) {setData(result); setError(''); setLoading(false);}
     } catch(e) {
       if (signal?.aborted || version !== sequence.current) return;
-      if (e instanceof ApiError && e.status === 401) router.replace('/login');
+      if (e instanceof ApiError && e.status === 401) {
+        setData(null);
+        router.replace('/login');
+      }
       setError(messageOf(e)); setLoading(false);
     }
   }, [load, router]);

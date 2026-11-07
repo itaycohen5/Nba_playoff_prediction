@@ -20,6 +20,18 @@ class AuthSession(Base):
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
     expires_at = Column(DateTime, nullable=False)
 
+class AccountEmail(Base):
+    __tablename__ = 'account_emails'
+    user_id = Column(Integer, ForeignKey('users.id'), primary_key=True)
+    email = Column(String(254), nullable=False, index=True)
+    verified_at = Column(DateTime, nullable=True)
+    verification_hash = Column(String(64), nullable=True, unique=True)
+    verification_expires_at = Column(DateTime, nullable=True)
+    __table_args__ = (
+        Index('one_verified_account_per_email', 'email', unique=True,
+              sqlite_where=text('verified_at IS NOT NULL'), postgresql_where=text('verified_at IS NOT NULL')),
+    )
+
 class LoginAttempt(Base):
     __tablename__ = 'login_attempts'
     key = Column(String(64), primary_key=True)

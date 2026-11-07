@@ -5,10 +5,12 @@ import { useRef, useState, type FormEvent } from 'react';
 import { Brand, Notice } from '@/components/ui';
 import { LanguageSwitcher, useLanguage } from '@/lib/i18n';
 import { api, messageOf, record } from '@/lib/api';
-import { PasswordRules, passwordIssues } from '@/components/password-rules';
+import { PasswordPolicyNotice, PasswordRules, meetsPasswordRules, passwordPolicyError } from '@/components/password-rules';
+import { useLinkToken } from '@/lib/use-link-token';
 
 export default function ResetPasswordPage() {
   const {t} = useLanguage();
+  const code = useLinkToken();
   const submitting = useRef(false);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
@@ -19,18 +21,12 @@ export default function ResetPasswordPage() {
     event.preventDefault();
     if (submitting.current) return;
     const form = new FormData(event.currentTarget);
-    const code = String(form.get('code') ?? '').trim();
-    if (!/^[A-Za-z0-9_-]{43}$/.test(code)) {
+    if (!code) {
       setError('קוד האיפוס אינו תקף או שפג תוקפו');
       return;
     }
-    const missing = passwordIssues(password, t);
-    if (missing.length) {
-      setError(t('דרישות סיסמה חסרות: ', 'Missing password requirements: ') + missing.join(' · '));
-      return;
-    }
-    if (new TextEncoder().encode(password).length > 72) {
-      setError('נדרשת סיסמה עם לפחות 8 תווים ועד 72 בתים (תווים בעברית תופסים יותר מבית אחד)');
+    if (!meetsPasswordRules(password)) {
+      setError(passwordPolicyError);
       return;
     }
     if (password !== form.get('confirm')) {
@@ -57,20 +53,21 @@ export default function ResetPasswordPage() {
     <main id="main" tabIndex={-1} className="auth-layout">
       <section className="auth-context">
         <h2>{t('שחזור חשבון','Account recovery')}</h2>
-        <p>{t('בקשו ממנהל האתר קוד איפוס לאחר אימות בעלות. הקוד תקף ל־30 דקות ולשימוש אחד.', 'Request a reset code from the site administrator after verifying ownership. The code expires after 30 minutes and can only be used once.')}</p>
+        <p>{t('בחרו סיסמה חדשה ואמתו אותה. הקישור מהמייל תקף ל־30 דקות ולשימוש אחד.', 'Choose and confirm a new password. Your email link expires after 30 minutes and can only be used once.')}</p>
       </section>
       <section className="auth-form-section" aria-labelledby="reset-title">
         <h1 id="reset-title">{t('איפוס סיסמה','Reset password')}</h1>
-        {done ? <Notice>{t('הסיסמה עודכנה. אפשר להתחבר עם הסיסמה החדשה.','Password updated. Sign in with your new password.')}</Notice> :
+        {done ? <Notice>{t('הסיסמה עודכנה. אפשר להתחבר עם הסיסמה החדשה.','Password updated. Sign in with your new password.')}</Notice> : code === null ? <p role="status">{t('בודקים את הקישור…','Reading the link…')}</p> : !code ? <><Notice error>{t('יש לפתוח את קישור האיפוס שקיבלתם במייל.','Open the reset link from your email.')}</Notice><Link className="button primary" href="/forgot-password">{t('בקשת קישור חדש','Request a new link')}</Link></> :
           <form onSubmit={submit} className="form-stack" aria-busy={busy}>
-            {error && <Notice error>{error}</Notice>}
-            <div className="field"><label htmlFor="reset-code">{t('קוד איפוס','Reset code')}</label><input id="reset-code" name="code" dir="ltr" autoComplete="one-time-code" spellCheck={false} required disabled={busy}/></div>
+            {error === passwordPolicyError ? <PasswordPolicyNotice value={password}/> : error && <Notice error>{error}</Notice>}
             <div className="field"><label htmlFor="new-password">{t('סיסמה חדשה','New password')}</label><input id="new-password" name="password" type="password" value={password} onChange={event => setPassword(event.target.value)} autoComplete="new-password" required disabled={busy} aria-describedby="reset-password-help"/><PasswordRules id="reset-password-help" value={password}/></div>
             <div className="field"><label htmlFor="confirm-password">{t('אימות סיסמה','Confirm password')}</label><input id="confirm-password" name="confirm" type="password" autoComplete="new-password" required disabled={busy}/></div>
             <button className="button primary full" disabled={busy}>{busy ? t('שומרים…','Saving…') : t('שמירת סיסמה','Save password')}</button>
           </form>}
         <p className="auth-switch"><Link href="/login">{t('חזרה לכניסה','Back to sign in')}</Link></p>
+        <p className="auth-switch"><Link href="/forgot-password">{t('הקישור פג? בקשת קישור חדש','Link expired? Request another')}</Link></p>
       </section>
     </main>
+    <footer className="auth-bottom"><Link href="/accessibility" className="text-link">{t('הצהרת נגישות','Accessibility statement')}</Link></footer>
   </div>;
 }

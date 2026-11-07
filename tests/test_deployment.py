@@ -38,7 +38,7 @@ def test_schema_export_is_offline_and_protects_all_application_tables():
     result = subprocess.run([sys.executable, 'scripts/export_postgres_schema.py'],
                             cwd=ROOT, env=environment, capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
-    for table in ('users', 'auth_sessions', 'login_attempts', 'tournaments', 'mutations', 'bets', 'game_history'):
+    for table in ('users', 'auth_sessions', 'account_emails', 'login_attempts', 'tournaments', 'mutations', 'bets', 'game_history'):
         assert f'ALTER TABLE {table} ENABLE ROW LEVEL SECURITY;' in result.stdout
         assert f'REVOKE ALL ON TABLE {table} FROM PUBLIC;' in result.stdout
         assert f'REVOKE ALL ON TABLE {table} FROM anon;' in result.stdout

@@ -7,10 +7,26 @@ const rules = [
   {he: 'לפחות אות אחת באנגלית', en: 'At least one English letter', test: (value: string) => /[A-Za-z]/.test(value)},
   {he: 'לפחות ספרה אחת', en: 'At least one digit', test: (value: string) => /[0-9]/.test(value)},
   {he: 'לפחות תו מיוחד אחד, למשל ! או #', en: 'At least one special character, such as ! or #', test: (value: string) => /[!-/:-@\x5b-\x60{-~]/.test(value)},
+  {he: 'עד 72 בתים (תווים מסוימים תופסים יותר מבית אחד)', en: 'Up to 72 bytes (some characters use more than one byte)', test: (value: string) => new TextEncoder().encode(value).length <= 72},
 ];
 
-export function passwordIssues(value: string, t: (he: string, en: string) => string) {
+export function meetsPasswordRules(value: string) {
+  return rules.every(rule => rule.test(value));
+}
+
+function passwordIssues(value: string, t: (he: string, en: string) => string) {
   return rules.filter(rule => !rule.test(value)).map(rule => t(rule.he, rule.en));
+}
+
+export const passwordPolicyError = 'הסיסמה אינה עומדת בכל הדרישות המוצגות';
+
+export function PasswordPolicyNotice({value}: {value: string}) {
+  const {t} = useLanguage();
+  const missing = passwordIssues(value, t);
+  if (!missing.length) return null;
+  return <div className="notice notice-error" role="alert">
+    {t('דרישות סיסמה חסרות: ', 'Missing password requirements: ')}{missing.join(' · ')}
+  </div>;
 }
 
 export function PasswordRules({id, value}: {id: string; value: string}) {

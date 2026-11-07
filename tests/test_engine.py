@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from backend.playoff_engine import PlayoffEngine
+from backend.playoff_engine import PlayoffEngine, SCORE_MARGIN
 
 
 @pytest.fixture
@@ -81,6 +81,18 @@ def test_unknown_or_identical_teams_are_not_silently_accepted(engine):
         engine.generate_game_stats("unknown", engine.east_teams[1])
     with pytest.raises(ValueError):
         engine.calculate_advanced_odds(engine.east_teams[1], engine.east_teams[1])
+
+
+@pytest.mark.parametrize('sampled_total,expected_total', [(220.2, 221), (219.8, 219)])
+def test_total_rounds_to_nearest_attainable_score_without_changing_margin(engine, monkeypatch, sampled_total, expected_total):
+    team1, team2 = engine.west_teams[1], engine.west_teams[8]
+    points1, points2 = engine._expected_points(team1, team2)
+    draw = 1 - SCORE_MARGIN.cdf(5 - (points1 - points2))
+    monkeypatch.setattr('backend.playoff_engine.random.random', lambda: draw)
+    monkeypatch.setattr('backend.playoff_engine.random.gauss', lambda mean, sigma: sampled_total if sigma == 14 else mean)
+    game = engine.generate_game_stats(team1, team2)
+    assert game['t1_pts'] - game['t2_pts'] == 5
+    assert game['total_points'] == expected_total
 
 
 def test_home_court_follows_seed_even_when_higher_seed_is_second(engine):

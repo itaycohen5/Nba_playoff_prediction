@@ -23,7 +23,7 @@ os.environ["COOKIE_SECURE"] = "false"
 from fastapi.testclient import TestClient
 from backend import api
 from backend.db.database import Base, SessionLocal, engine
-from backend.db.models import AuthSession, Bet, GameHistory, Tournament, User, utcnow
+from backend.db.models import AccountEmail, AuthSession, Bet, GameHistory, Tournament, User, utcnow
 from backend.db.recovery import issue_recovery_code, recovery_key
 
 if Path(engine.url.database).resolve() != TEST_DATABASE.resolve():
@@ -131,6 +131,106 @@ class APIRegressionTests(unittest.TestCase):
         }).status_code, 401)
         login = self.client.post("/api/login", json={"username": "qa_user", "password": new_password})
         self.assertEqual(login.json(), user)
+
+    def test_password_recovery_unlocks_login_and_preserves_other_account_cookie(self):
+        self.register()
+        old_password = {"username": "qa_user", "password": "incorrect"}
+        with patch.object(api, "verify_password", return_value=False):
+            for _ in range(10):
+                self.assertEqual(self.client.post("/api/login", json=old_password).status_code, 401)
+        self.assertEqual(self.client.post("/api/login", json=old_password).status_code, 429)
+        with SessionLocal.begin() as db:
+            code = issue_recovery_code(db, "qa_user")
+        new_password = "NewQaPassw0rd!"
+        with TestClient(api.app) as other:
+            other_user = self.register("other_user", other).json()
+            response = other.post("/api/reset-password", json={"code": code, "password": new_password})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(self.me(other), other_user)
+        response = self.client.post("/api/login", json={"username": "qa_user", "password": new_password})
+        self.assertEqual(response.status_code, 200, response.text)
+
+    @patch.dict(os.environ, {'GMAIL_USER': 'sender@gmail.com', 'GMAIL_APP_PASSWORD': 'test-only', 'PUBLIC_APP_URL': 'https://playoff.example'})
+    @patch('backend.email_delivery.send_link')
+    def test_email_verification_and_self_service_password_recovery(self, send):
+        self.register()
+        body = {'email': '  Player@Example.com ', 'password': 'QaPassw0rd!'}
+        result = self.client.post('/api/me/email', json=body)
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(self.client.get('/api/me/email').json()['email'], 'player@example.com')
+        self.assertFalse(self.client.get('/api/me/email').json()['verified'])
+        verification = send.call_args.args[1]
+        self.assertEqual(send.call_args.args[2], 'verify-email')
+        send.reset_mock()
+        self.assertEqual(self.client.post('/api/forgot-password', json={'email':'player@example.com'}).status_code, 200)
+        send.assert_not_called()
+        self.assertEqual(self.client.post('/api/verify-email', json={'code':verification}).status_code, 200)
+        self.assertEqual(self.client.post('/api/verify-email', json={'code':verification}).status_code, 400)
+        self.assertTrue(self.client.get('/api/me/email').json()['verified'])
+        with SessionLocal() as db:
+            self.assertIsNone(db.query(AccountEmail).one().verification_hash)
+        self.assertEqual(self.client.post('/api/forgot-password', json={'email':'player@example.com'}).status_code, 200)
+        code = send.call_args.args[1]
+        self.assertEqual(send.call_args.args[2], 'reset-password')
+        self.assertEqual(self.client.post('/api/reset-password', json={'code':code,'password':'NewPassw0rd!'}).status_code, 200)
+        self.assertEqual(self.client.post('/api/reset-password', json={'code':code,'password':'NewPassw0rd!'}).status_code, 400)
+        self.assertEqual(self.client.get('/api/me').status_code, 401)
+        self.assertEqual(self.client.post('/api/login', json={'username':'qa_user','password':'NewPassw0rd!'}).status_code, 200)
+
+    @patch.dict(os.environ, {'GMAIL_USER': 'sender@gmail.com', 'GMAIL_APP_PASSWORD': 'test-only', 'PUBLIC_APP_URL': 'https://playoff.example'})
+    @patch('backend.email_delivery.send_link')
+    def test_registration_email_expiry_rate_limit_and_unknown_address(self, send):
+        response = self.client.post('/api/register', json={'username':'mail_user','password':'QaPassw0rd!','email':'new@example.com'})
+        self.assertEqual(response.status_code, 201, response.text)
+        code=send.call_args.args[1]
+        with SessionLocal() as db:
+            db.query(AccountEmail).one().verification_expires_at=utcnow()-timedelta(seconds=1)
+            db.commit()
+        self.assertEqual(self.client.post('/api/verify-email', json={'code':code}).status_code, 400)
+        send.reset_mock()
+        first=self.client.post('/api/forgot-password', json={'email':'unknown@example.com'})
+        second=self.client.post('/api/forgot-password', json={'email':'new@example.com'})
+        self.assertEqual(first.json(),second.json())
+        send.assert_not_called()
+        for _ in range(2):
+            self.assertEqual(self.client.post('/api/forgot-password',json={'email':'unknown@example.com'}).status_code,200)
+        self.assertEqual(self.client.post('/api/forgot-password',json={'email':'unknown@example.com'}).status_code,429)
+
+    @patch.dict(os.environ, {'GMAIL_USER': 'sender@gmail.com', 'GMAIL_APP_PASSWORD': 'test-only', 'PUBLIC_APP_URL': 'https://playoff.example'})
+    @patch('backend.email_delivery.send_link')
+    def test_email_change_requires_password_and_cannot_take_verified_address(self, send):
+        self.register()
+        self.assertEqual(self.client.post('/api/me/email',json={'email':'owner@example.com','password':'wrong'}).status_code,403)
+        send.assert_not_called()
+        self.assertEqual(self.client.post('/api/me/email',json={'email':'owner@example.com','password':'QaPassw0rd!'}).status_code,200)
+        code=send.call_args.args[1]
+        self.assertEqual(self.client.post('/api/verify-email',json={'code':code}).status_code,200)
+        with SessionLocal.begin() as db:
+            reset=issue_recovery_code(db,'qa_user')
+        self.assertEqual(self.client.post('/api/me/email',json={'email':'changed@example.com','password':'QaPassw0rd!'}).status_code,200)
+        self.assertEqual(self.client.post('/api/reset-password',json={'code':reset,'password':'NewPassw0rd!'}).status_code,400)
+        code=send.call_args.args[1]
+        self.assertEqual(self.client.post('/api/verify-email',json={'code':code}).status_code,200)
+        self.client.post('/api/logout')
+        self.register('other_user')
+        self.assertEqual(self.client.post('/api/me/email',json={'email':'changed@example.com','password':'QaPassw0rd!'}).status_code,409)
+
+    @patch.dict(os.environ, {'GMAIL_USER': 'sender@gmail.com', 'GMAIL_APP_PASSWORD': 'test-only', 'PUBLIC_APP_URL': 'https://playoff.example'})
+    @patch('backend.email_delivery.send_link',side_effect=api.email_delivery.DeliveryError('private provider details'))
+    def test_failed_email_delivery_rolls_back_registration(self, send):
+        response=self.client.post('/api/register',json={'username':'mail_failure','password':'QaPassw0rd!','email':'new@example.com'})
+        self.assertEqual(response.status_code,503,response.text)
+        self.assertNotIn('private provider',response.text)
+        with SessionLocal() as db:
+            self.assertEqual(db.query(User).count(),0)
+            self.assertEqual(db.query(AccountEmail).count(),0)
+
+    def test_unconfigured_email_is_honest_and_does_not_claim_delivery(self):
+        with patch.dict(os.environ,{'GMAIL_APP_PASSWORD':''}):
+            self.assertEqual(self.client.post('/api/forgot-password',json={'email':'unknown@example.com'}).status_code,503)
+        self.assertEqual(self.client.post('/api/me/email',json={'email':'owner@example.com','password':'QaPassw0rd!'}).status_code,401)
+        for invalid in ('bad','a\r\nb@example.com','a..b@example.com'):
+            self.assertEqual(self.client.post('/api/forgot-password',json={'email':invalid}).status_code,422)
 
     def test_session_login_logout_and_wrong_password(self):
         self.assertEqual(self.client.get("/api/me").status_code, 401)
@@ -361,15 +461,43 @@ class APIRegressionTests(unittest.TestCase):
         line = self.lines()[0]
         futures = self.client.get("/api/futures-lines").json()["futures_lines"]
         eliminated_quote = next(item for item in futures if item["team"] == line["team2"])
+        body = self.bet(line, "futures_champion", matchup="NBA Finals", game_number=0,
+                        team_bet_on=eliminated_quote["team"], odds=eliminated_quote["odds"])
+        self.assertEqual(self.client.post("/api/place-bet", json=body).status_code, 200)
         response = self.client.post("/api/simulate-game", json={"matchup": "NBA Finals", "game_number": 1})
         self.assertIn(response.status_code, (404, 409))
         with patch.object(api.engine_nba, "generate_game_stats", self.game_result):
             response = self.client.post("/api/simulate-series-auto", json={"matchup": line["series_id"]})
         self.assertEqual(response.status_code, 200, response.text)
-        body = self.bet(line, "futures_champion", matchup="NBA Finals", game_number=0,
-                        team_bet_on=eliminated_quote["team"], odds=eliminated_quote["odds"])
+        self.assertEqual(self.history()[0]["status"], "lost")
+        body["request_id"] = str(uuid4())
         self.assertEqual(self.client.post("/api/place-bet", json=body).status_code, 409)
-        self.assertEqual(self.me()["balance"], 1000)
+        # Re-create an older stored pending ticket that was already impossible.
+        # Reset must not treat it as a still-live wager and refund it.
+        with SessionLocal() as db:
+            db.query(Bet).one().status = "pending"
+            db.commit()
+        reset = self.client.post("/api/reset-tournament")
+        self.assertEqual(reset.status_code, 200, reset.text)
+        self.assertEqual(reset.json()["refund"], 0)
+        self.assertEqual(self.history()[0]["status"], "lost")
+        self.assertEqual(self.me()["balance"], 990)
+
+    def test_futures_odds_adjust_after_a_game_before_elimination(self):
+        self.register()
+        line = self.lines()[0]
+        def prices():
+            response = self.client.get("/api/futures-lines")
+            self.assertEqual(response.status_code, 200, response.text)
+            return {row["team"]: row["odds"] for row in response.json()["futures_lines"]}
+
+        before = prices()
+        with patch.object(api.engine_nba, "generate_game_stats", self.game_result):
+            self.assertEqual(self.play(line).status_code, 200)
+        after = prices()
+        self.assertEqual(set(before), set(after))
+        self.assertLess(after[line["team1"]], before[line["team1"]])
+        self.assertGreater(after[line["team2"]], before[line["team2"]])
 
     def test_idempotent_bet_retry_and_changed_payload(self):
         self.register()

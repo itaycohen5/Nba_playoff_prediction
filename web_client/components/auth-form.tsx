@@ -5,28 +5,28 @@ import { useRouter } from 'next/navigation';
 import { useRef, useState } from 'react';
 import { api, parseUser, messageOf } from '@/lib/api';
 import { Brand, Notice } from './ui';
-import { PasswordRules, passwordIssues } from './password-rules';
+import { PasswordPolicyNotice, PasswordRules, meetsPasswordRules, passwordPolicyError } from './password-rules';
 
 export function AuthForm({register = false}: {register?: boolean}) {
   const {t} = useLanguage();
   const router = useRouter(), lock = useRef(false);
   const [username, setUsername] = useState(''), [password, setPassword] = useState(''), [confirm, setConfirm] = useState('');
   const [error, setError] = useState(''), [busy, setBusy] = useState(false);
+  const [email,setEmail] = useState('');
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (lock.current) return; setError('');
     const name = username.trim(), bytes = new TextEncoder().encode(password).length;
     if (!name) {setError('יש להזין שם משתמש'); return;}
     if (register && !/^[\p{L}\p{N}_]{3,40}$/u.test(name)) {setError('שם משתמש: 3–40 אותיות, ספרות או קו תחתון, ללא רווחים'); return;}
-    const missing = register ? passwordIssues(password, t) : [];
-    if (missing.length) {setError(t('דרישות סיסמה חסרות: ', 'Missing password requirements: ') + missing.join(' · ')); return;}
-    if (bytes > 72) {setError(t('הסיסמה ארוכה מדי. נסו לקצר אותה.','This password is too long. Try a shorter one.')); return;}
-    if (!password.length) {setError(t('יש להזין סיסמה','Enter your password')); return;}
+    if (register && !meetsPasswordRules(password)) {setError(passwordPolicyError); return;}
+    if (bytes > 72) {setError('סיסמה מוגבלת ל־72 בתים בקידוד UTF-8'); return;}
+    if (!password.length) {setError('יש להזין סיסמה'); return;}
     if (register && password !== confirm) {setError('הסיסמאות אינן תואמות'); return;}
     lock.current = true; setBusy(true);
     try {
-      await api(register ? '/register' : '/login', parseUser, {username:name,password});
+      await api(register ? '/register' : '/login', parseUser, {username:name,password,...(register?{email:email.trim()}:{})},30000);
       try {localStorage.removeItem('userId');} catch {}
-      router.replace('/dashboard');
+      router.replace(register ? '/account' : '/dashboard');
     } catch(e) {setError(messageOf(e));}
     finally {lock.current = false; setBusy(false);}
   }
@@ -44,17 +44,23 @@ export function AuthForm({register = false}: {register?: boolean}) {
         <h1 id="auth-title">{register ? t('יצירת חשבון','Create an account') : t('כניסה לחשבון','Sign in')}</h1>
         <p className="auth-description">{register ? t('פותחים טורניר אישי עם יתרה מדומה.','Start your personal tournament with virtual funds.') : t('ממשיכים מהסדרה שבה עצרת.','Pick up where your last series left off.')}</p>
         <form onSubmit={submit} className="form-stack" aria-busy={busy}>
-          {error && <Notice error>{error}</Notice>}
+          {register && <div className="field"><label htmlFor="email">{t('מייל לשחזור החשבון','Recovery email')}</label><input id="email" name="email" type="email" dir="ltr" autoComplete="email" maxLength={254} value={email} onChange={event=>setEmail(event.target.value)} required disabled={busy}/><small>{t('נשלח קישור לאימות הכתובת.','We will send a link to verify your address.')}</small></div>}
+          {error === passwordPolicyError ? <PasswordPolicyNotice value={password}/> : error && <Notice error>{error}</Notice>}
           <div className="field">
             <label htmlFor="username">{t('שם משתמש','Username')}</label>
             <input id="username" name="username" value={username} onChange={e => setUsername(e.target.value)} autoComplete="username" minLength={register ? 3 : 1} maxLength={40} required disabled={busy} aria-describedby={register ? 'username-help' : undefined}/>
             {register && <small id="username-help">{t('3–40 אותיות, ספרות או קו תחתון.','3–40 letters, numbers or underscores.')}</small>}
           </div>
-          <div className="field"><label htmlFor="password">{t('סיסמה','Password')}</label><input id="password" name="password" type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete={register ? 'new-password' : 'current-password'} required disabled={busy} aria-describedby="password-help"/><PasswordRules id="password-help" value={password}/></div>
+          <div className="field">
+            <label htmlFor="password">{t('סיסמה','Password')}</label>
+            <input id="password" name="password" type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete={register ? 'new-password' : 'current-password'} required disabled={busy} aria-describedby={register ? 'password-help' : 'legacy-password-help password-help'}/>
+            {!register && <small id="legacy-password-help">{t('הדרישות חלות על סיסמאות חדשות. אפשר להיכנס עם הסיסמה הקיימת.', 'These rules apply to new passwords. You can sign in with your existing password.')}</small>}
+            <PasswordRules id="password-help" value={password}/>
+          </div>
           {register && <div className="field"><label htmlFor="confirm">{t('אימות סיסמה','Confirm password')}</label><input id="confirm" name="confirm" type="password" value={confirm} onChange={e => setConfirm(e.target.value)} autoComplete="new-password" required disabled={busy}/></div>}
           <button className="button primary full" disabled={busy}>{busy ? t('מתחברים…','Signing you in…') : register ? t('יצירת חשבון','Create account') : t('כניסה לחשבון','Sign in')}</button>
         </form>
-        {!register && <p className="auth-switch"><Link href="/reset-password">{t('שכחת סיסמה?','Forgot your password?')}</Link></p>}
+        {!register && <p className="auth-switch"><Link href="/forgot-password">{t('שכחת סיסמה?','Forgot your password?')}</Link></p>}
         <p className="auth-switch">{register ? t('כבר יש לך חשבון?','Already have an account?') : t('אין לך חשבון עדיין?','No account yet?')} <Link href={register ? '/login' : '/register'}>{register ? t('כניסה','Sign in') : t('יצירת חשבון','Create an account')}</Link></p>
       </section>
     </main>

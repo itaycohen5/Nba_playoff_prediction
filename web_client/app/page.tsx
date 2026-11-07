@@ -16,7 +16,28 @@ function DemoMarket(){
 export default function Home(){
  const {t}=useLanguage();const [view,setView]=useState(0);
  return <div className="tp-page"><a href="#main" className="skip-link">{t('דלג לתוכן','Skip to content')}</a><header className="tp-nav tp-wrap"><Brand/><LanguageSwitcher/><Link className="text-link" href="/login">{t('כניסה','Sign in')} ↗</Link></header><main id="main" tabIndex={-1}>
- <section className="tp-hero"><div className="tp-wrap tp-hero-grid"><div className="tp-hero-copy"><h1>{t('הפלייאוף שלך.','Your playoffs.')}<br/>{t('הבחירה שלך.','Your call.')}</h1><p>{t('16 קבוצות. תחזית אחת בכל פעם. מעבדת הפלייאוף שלך משלבת יחסים, סדרות וסימולציות עם יתרה מדומה בלבד.','16 teams. One call at a time. Your personal playoff lab combines odds, series and simulations with virtual funds.')}</p><Link href="/register" className="button primary">{t('פותחים עונה','Start your season')} ↗</Link><p className="tp-small">{t('בלי הפקדות. בלי משיכות. רק כדורסל.','No deposits. No withdrawals. Just basketball.')}</p></div><DemoMarket/></div><div className="tp-hero-band"><div className="tp-wrap"><span>{t('עד ארבעה ניצחונות.','First to four wins.')}</span><span>{t('עד אלופה אחת.','Down to one champion.')}</span></div></div></section>
+ <section className="tp-hero">
+   <svg className="broadcast-court" viewBox="0 0 800 420" fill="none" aria-hidden="true" focusable="false">
+     <rect x="12" y="12" width="776" height="396" rx="5"/>
+     <path d="M400 12v396M12 148h143v124H12m776-124H645v124h143M12 48h25a162 162 0 0 1 0 324H12M788 48h-25a162 162 0 0 0 0 324h25"/>
+     <circle cx="400" cy="210" r="52"/><circle cx="155" cy="210" r="52"/><circle cx="645" cy="210" r="52"/>
+   </svg>
+   <div className="tp-wrap tp-hero-grid">
+     <div className="tp-hero-copy">
+       <p className="broadcast-label">{t('מעבדת פלייאוף NBA','NBA PLAYOFF SIMULATOR')}</p>
+       <h1>{t('הפלייאוף שלך.','Your playoffs.')}<br/>{t('הבחירה שלך.','Your call.')}</h1>
+       <p>{t('בחרו מנצחת, הריצו משחק ובנו את הדרך לגמר. כל חשבון מקבל טורניר אישי ויתרה מדומה.','Pick a winner, simulate the game, and build your road to the Finals. Every account gets a personal bracket and virtual funds.')}</p>
+       <Link href="/register" className="button primary">{t('פותחים עונה','Start your season')} <span aria-hidden="true">↗</span></Link>
+       <p className="tp-small">{t('בלי הפקדות. בלי משיכות. רק כדורסל.','No deposits. No withdrawals. Just basketball.')}</p>
+     </div>
+     <DemoMarket/>
+   </div>
+   <dl className="tp-wrap broadcast-format" aria-label={t('מבנה הטורניר','Tournament format')}>
+     <div><dt>{t('קבוצות','Teams')}</dt><dd>16</dd></div>
+     <div><dt>{t('ניצחונות להעפלה','Wins to advance')}</dt><dd>4</dd></div>
+     <div><dt>{t('אלופה','Champion')}</dt><dd>1</dd></div>
+   </dl>
+ </section>
  <section className="tp-showcase tp-wrap" aria-labelledby="showcase-title"><div className="tp-section-head"><h2 id="showcase-title">{t('רואים את כל המגרש.','Read the entire field.')}</h2><p>{t('מבט מבפנים על הטורניר האישי שלך.','Inside your personal tournament.')}</p></div><div className="tp-view-controls" role="group" aria-label={t('בחירת תצוגת מוצר','Choose a product view')}>{views.map((item,index)=><button key={item[0]} type="button" onClick={()=>setView(index)} aria-pressed={index===view} aria-controls="product-view">{t(item[1],item[2])}</button>)}</div><div id="product-view" className="tp-product-view" aria-live="polite"><div className="tp-product-picture" data-ui>{views.map((item,index)=><Image key={item[0]} hidden={index!==view} src={`/product/${item[0]}.jpg`} width={1280} height={800} alt={t(`צילום מתוך האתר: ${item[1]}`,`Actual app screenshot: ${item[2]}`)}/>)}</div><p>{t(views[view][3],views[view][4])}</p></div></section>
  <section className="tp-process" aria-label={t('איך משחקים','How to play')}><div className="tp-wrap">{[
  ['קוראים את היחס.','Read the price.','פותחים את המשחק הבא. בוחנים מי משחקת בבית ומה המודל מציע לכל שוק.','Open the next game. Check the home team and the model price for each market.'],

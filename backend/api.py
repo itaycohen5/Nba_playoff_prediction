@@ -7,7 +7,7 @@ import os
 import re
 import secrets
 import string
-from collections import Counter
+from collections import Counter, defaultdict
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from decimal import Decimal, ROUND_HALF_UP
@@ -25,9 +25,10 @@ from sqlalchemy.orm import Session
 
 from backend.db.auth import get_password_hash, verify_password
 from backend.db.database import get_db, initialize_database
-from backend.db.models import AuthSession, Bet, GameHistory, LoginAttempt, Mutation, Tournament, User, utcnow
-from backend.db.recovery import recovery_key
-from backend.playoff_engine import PlayoffEngine
+from backend.db.models import AccountEmail, AuthSession, Bet, GameHistory, LoginAttempt, Mutation, Tournament, User, utcnow
+from backend.db.recovery import recovery_key, issue_recovery_code
+from backend import email_delivery
+from backend.playoff_engine import PlayoffEngine, odds_for_probability
 
 logger = logging.getLogger(__name__)
 engine_nba = PlayoffEngine()
@@ -64,6 +65,10 @@ async def database_busy(_request, _error):
 async def constraint_conflict(_request, _error):
     return JSONResponse({'detail': 'המצב השתנה. רעננו ונסו שוב.'}, status_code=409)
 
+@app.exception_handler(email_delivery.DeliveryError)
+async def email_unavailable(_request, _error):
+    return JSONResponse({'detail': 'שליחת המייל אינה זמינה כרגע. נסו שוב מאוחר יותר.'}, status_code=503)
+
 @app.exception_handler(RequestValidationError)
 async def validation_error(_request, error):
     # Echoing raw input can disclose passwords or make invalid numbers fail JSON encoding.
@@ -72,6 +77,16 @@ async def validation_error(_request, error):
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
+
+class EmailRequest(StrictModel):
+    email: str = Field(max_length=254)
+    _email = field_validator('email')(email_delivery.normalize_email)
+
+class BindEmailRequest(EmailRequest):
+    password: str = Field(min_length=1, max_length=72)
+
+class VerifyEmailRequest(StrictModel):
+    code: str = Field(min_length=43, max_length=43, pattern=r'^[A-Za-z0-9_-]+$')
 
 class LoginRequest(StrictModel):
     username: str = Field(min_length=1, max_length=40)
@@ -108,6 +123,11 @@ def validate_new_password(value):
 class RegisterRequest(LoginRequest):
     username: str = Field(min_length=3, max_length=40)
     password: str
+    email: str | None = Field(default=None, max_length=254)
+    @field_validator('email')
+    @classmethod
+    def valid_email(cls, value):
+        return email_delivery.normalize_email(value) if value is not None else None
     _new_password = field_validator('password')(validate_new_password)
     @field_validator('username')
     @classmethod
@@ -279,15 +299,26 @@ def futures_quotes(state):
     _, rounds, by_series, champion = state
     if champion:
         return []
-    alive = set(engine_nba.west_teams.values()) | set(engine_nba.east_teams.values())
+    advancing = [{team: 1.0} for _, t1, t2 in rounds[0] for team in (t1, t2)]
     for matches in rounds:
-        for sid, t1, t2 in matches:
-            winner = winner_of(by_series.get(sid, []), t1, t2)
+        next_round = []
+        for (sid, t1, t2), left, right in zip(matches, advancing[::2], advancing[1::2], strict=True):
+            games = by_series.get(sid, [])
+            winner = winner_of(games, t1, t2)
             if winner:
-                alive.discard(t2 if winner == t1 else t1)
-    weights = {t: max(.01, float(engine_nba.team_db[t]['CUM_WIN_PCT'])) ** 2.5 for t in alive}
-    total = sum(weights.values())
-    return [{'team': t, 'odds': max(1.01, round(.95 * total / weights[t], 2))} for t in sorted(alive)]
+                next_round.append({winner: 1.0})
+                continue
+            distribution = defaultdict(float)
+            for team1, left_probability in left.items():
+                for team2, right_probability in right.items():
+                    matchup_probability = left_probability * right_probability
+                    series_probability = engine_nba.series_win_probability(team1, team2, games)
+                    distribution[team1] += matchup_probability * series_probability
+                    distribution[team2] += matchup_probability * (1 - series_probability)
+            next_round.append(distribution)
+        advancing = next_round
+    return [{'team': team, 'odds': odds_for_probability(probability)}
+            for team, probability in sorted(advancing[0].items()) if probability > 0]
 
 
 def quote_bet(db, tournament, req):
@@ -347,6 +378,8 @@ def simulate_one(db, user, tournament, sid, expected_game=None):
         if bet.bet_type == 'futures_champion':
             if sid == 'NBA Finals' and series_champion:
                 pay_bet(user, bet, 'won' if bet.team_bet_on == series_champion else 'lost')
+            elif series_champion and bet.team_bet_on == (t2 if series_champion == t1 else t1):
+                pay_bet(user, bet, 'lost')
         elif bet.matchup == sid and bet.bet_type == 'series_winner':
             if series_champion:
                 pay_bet(user, bet, 'won' if bet.team_bet_on == series_champion else 'lost')
@@ -368,21 +401,115 @@ def simulate_one(db, user, tournament, sid, expected_game=None):
 def health():
     return {'status': 'ok', 'data_source': getattr(engine_nba, 'data_source', 'season snapshot')}
 
+def mail_quota(db, request, email):
+    now = utcnow()
+    source = request.client.host if request.client else 'local'
+    for scope, value, limit in (('source', source, 8), ('email', email, 3)):
+        key = hashlib.sha256(f'email-mail:{scope}:{value}'.encode()).hexdigest()
+        if db.get_bind().dialect.name == 'postgresql':
+            db.execute(postgres_insert(LoginAttempt).values(key=key, failures=0, window_start=now)
+                       .on_conflict_do_nothing(index_elements=[LoginAttempt.key]))
+        attempt = db.query(LoginAttempt).filter_by(key=key).with_for_update().first()
+        if attempt is None:
+            attempt = LoginAttempt(key=key, failures=0, window_start=now)
+            db.add(attempt)
+        if now - attempt.window_start >= timedelta(minutes=15):
+            attempt.failures, attempt.window_start = 0, now
+        if attempt.failures >= limit:
+            raise HTTPException(429, 'יותר מדי בקשות למייל. נסו שוב בעוד 15 דקות', headers={'Retry-After': '900'})
+        attempt.failures += 1
+
+
+def prepare_email_verification(db, user, email):
+    if db.query(AccountEmail).filter(AccountEmail.email == email, AccountEmail.verified_at.is_not(None),
+                                    AccountEmail.user_id != user.id).first():
+        raise HTTPException(409, 'לא ניתן לשייך את כתובת המייל הזו לחשבון')
+    entry = db.get(AccountEmail, user.id)
+    if entry is None:
+        entry = AccountEmail(user_id=user.id)
+        db.add(entry)
+    code = secrets.token_urlsafe(32)
+    entry.email, entry.verified_at = email, None
+    entry.verification_hash = hashlib.sha256(code.encode('ascii')).hexdigest()
+    entry.verification_expires_at = utcnow() + timedelta(minutes=30)
+    # Links sent to a previous address must not survive an address change.
+    db.query(AuthSession).filter(AuthSession.user_id == user.id, AuthSession.token_hash.startswith('reset:')).delete(synchronize_session=False)
+    email_delivery.send_link(email, code, 'verify-email')
+
+
 @app.post('/api/register', status_code=201)
-def register(req: RegisterRequest, response: Response, db: Session = Depends(get_db)):
+def register(req: RegisterRequest, response: Response, request: Request, db: Session = Depends(get_db)):
     if db.query(User).filter_by(username=req.username).first():
         raise HTTPException(409, 'שם המשתמש כבר קיים')
+    if req.email:
+        email_delivery.settings()
+        mail_quota(db, request, req.email)
     user = User(username=req.username, hashed_password=get_password_hash(req.password), balance_cents=100000)
     db.add(user)
     db.flush()
     db.add(Tournament(owner_id=user.id))
+    if req.email:
+        prepare_email_verification(db, user, req.email)
     issue_session(db, user, response)
     db.commit()
     return wallet(user)
 
+
+@app.get('/api/me/email')
+def account_email(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    entry = db.get(AccountEmail, user.id)
+    return {'email': entry.email if entry else None, 'verified': bool(entry and entry.verified_at),
+            'delivery_configured': email_delivery.is_configured()}
+
+
+@app.post('/api/me/email')
+def bind_email(req: BindEmailRequest, request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if not verify_password(req.password, user.hashed_password):
+        raise HTTPException(403, 'הסיסמה הנוכחית שגויה')
+    email_delivery.settings()
+    mail_quota(db, request, req.email)
+    prepare_email_verification(db, user, req.email)
+    db.commit()
+    return {'status': 'sent'}
+
+
+@app.post('/api/verify-email')
+def verify_email(req: VerifyEmailRequest, db: Session = Depends(get_db)):
+    digest = hashlib.sha256(req.code.encode('ascii')).hexdigest()
+    entry = db.query(AccountEmail).filter_by(verification_hash=digest).first()
+    invalid = HTTPException(400, 'קישור האימות אינו תקף או שפג תוקפו')
+    if entry is None:
+        raise invalid
+    db.query(User).filter_by(id=entry.user_id).with_for_update().one()
+    db.refresh(entry)
+    if entry.verification_hash != digest or entry.verification_expires_at is None or entry.verification_expires_at <= utcnow():
+        raise invalid
+    entry.verified_at = utcnow()
+    entry.verification_hash = entry.verification_expires_at = None
+    db.commit()
+    return {'status': 'verified'}
+
+
+@app.post('/api/forgot-password')
+def forgot_password(req: EmailRequest, request: Request, db: Session = Depends(get_db)):
+    email_delivery.settings()
+    user = db.query(User).join(AccountEmail, AccountEmail.user_id == User.id).filter(
+        AccountEmail.email == req.email, AccountEmail.verified_at.is_not(None)).with_for_update().first()
+    mail_quota(db, request, req.email)
+    if user:
+        code = issue_recovery_code(db, user.username)
+        email_delivery.send_link(req.email, code, 'reset-password')
+    db.commit()
+    # Never disclose whether the address has a registered/verified account.
+    return {'status': 'accepted'}
+
 @app.post('/api/login')
 def login(req: LoginRequest, response: Response, request: Request, db: Session = Depends(get_db)):
-    key = hashlib.sha256(f'{request.client.host if request.client else "local"}:{req.username}'.encode()).hexdigest()
+    user = db.query(User).filter_by(username=req.username).with_for_update().first()
+    # Verified password recovery starts a fresh window for the new credentials.
+    key_parts = [request.client.host if request.client else 'local', req.username,
+                 user.hashed_password if user else None]
+    key = hashlib.sha256(json.dumps(key_parts).encode()).hexdigest()
     now = utcnow()
     if db.get_bind().dialect.name == 'postgresql':
         # SELECT FOR UPDATE cannot lock a counter that does not exist yet.
@@ -393,7 +520,6 @@ def login(req: LoginRequest, response: Response, request: Request, db: Session =
         attempt.failures, attempt.window_start = 0, now
     if attempt and attempt.failures >= 10:
         raise HTTPException(429, 'יותר מדי ניסיונות. נסו שוב בעוד 15 דקות', headers={'Retry-After': '900'})
-    user = db.query(User).filter_by(username=req.username).with_for_update().first()
     if not verify_password(req.password, user.hashed_password if user else None):
         if attempt is None:
             attempt = LoginAttempt(key=key, failures=0, window_start=now)
@@ -408,7 +534,7 @@ def login(req: LoginRequest, response: Response, request: Request, db: Session =
     return wallet(user)
 
 @app.post('/api/reset-password')
-def reset_password(req: PasswordResetRequest, response: Response, db: Session = Depends(get_db)):
+def reset_password(req: PasswordResetRequest, request: Request, response: Response, db: Session = Depends(get_db)):
     key = recovery_key(req.code)
     recovery = db.get(AuthSession, key)
     invalid = HTTPException(400, 'קוד האיפוס אינו תקף או שפג תוקפו')
@@ -418,10 +544,14 @@ def reset_password(req: PasswordResetRequest, response: Response, db: Session = 
     recovery = db.get(AuthSession, key, populate_existing=True)
     if user is None or recovery is None or recovery.expires_at <= utcnow():
         raise invalid
+    token = request.cookies.get(COOKIE)
+    browser_session = db.get(AuthSession, hashlib.sha256(token.encode()).hexdigest()) if token else None
+    clear_cookie = browser_session is not None and browser_session.user_id == user.id
     user.hashed_password = get_password_hash(req.password)
     db.query(AuthSession).filter_by(user_id=user.id).delete(synchronize_session=False)
     db.commit()
-    response.delete_cookie(COOKIE, path='/api', secure=COOKIE_SECURE, httponly=True, samesite='strict')
+    if clear_cookie:
+        response.delete_cookie(COOKIE, path='/api', secure=COOKIE_SECURE, httponly=True, samesite='strict')
     return {'status': 'ok'}
 
 @app.post('/api/logout')
@@ -564,9 +694,20 @@ def reset_tournament(req: ActionRequest | None = None, user: User = Depends(curr
         return previous
     tournament = active_tournament(db, user, req.tournament_id)
     pending = db.query(Bet).filter_by(tournament_id=tournament.id, user_id=user.id, status='pending').all()
-    refund = sum(b.amount_cents for b in pending)
+    _, rounds, by_series, _ = bracket_state(db, tournament)
+    eliminated = {
+        t2 if winner == t1 else t1
+        for matches in rounds
+        for sid, t1, t2 in matches
+        if (winner := winner_of(by_series.get(sid, []), t1, t2))
+    }
+    refund = 0
     for bet in pending:
-        pay_bet(user, bet, 'cancelled')
+        if bet.bet_type == 'futures_champion' and bet.team_bet_on in eliminated:
+            pay_bet(user, bet, 'lost')
+        else:
+            refund += bet.amount_cents
+            pay_bet(user, bet, 'cancelled')
     tournament.status = 'archived'
     db.flush()
     new_tournament = Tournament(owner_id=user.id)

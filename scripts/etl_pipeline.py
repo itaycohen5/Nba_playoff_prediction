@@ -12,6 +12,9 @@ FEATURES = [
 def main():
     gamelog = pd.read_csv(BASE / "data" / "nba_real_games.csv", dtype={"GAME_ID": str})
     require_columns(gamelog, ["GAME_ID", "TEAM_ID", "GAME_DATE", "WL", "MATCHUP"] + FEATURES)
+    # pandas groupby drops missing keys; reject them before deriving histories.
+    if gamelog[["GAME_ID", "TEAM_ID"]].isna().any().any():
+        raise ValueError("Missing game or team identifiers")
     if gamelog.duplicated(["GAME_ID", "TEAM_ID"]).any():
         raise ValueError("Duplicate team/game rows")
     if not gamelog["WL"].isin(["W", "L"]).all() or gamelog["MATCHUP"].isna().any():

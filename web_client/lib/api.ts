@@ -102,6 +102,12 @@ export function wagerValue(raw: string, balance: number): number {
 export const messageOf = (error: unknown) => error instanceof Error ? error.message : 'הפעולה נכשלה';
 
 const messageTranslations: Record<string, string> = {
+  'יש להזין כתובת מייל תקינה': 'Enter a valid email address',
+  'הסיסמה הנוכחית שגויה': 'The current password is incorrect',
+  'שליחת המייל אינה זמינה כרגע. נסו שוב מאוחר יותר.': 'Email delivery is currently unavailable. Try again later.',
+  'יותר מדי בקשות למייל. נסו שוב בעוד 15 דקות': 'Too many email requests. Try again in 15 minutes.',
+  'לא ניתן לשייך את כתובת המייל הזו לחשבון': 'This email address cannot be linked to this account',
+  'קישור האימות אינו תקף או שפג תוקפו': 'The verification link is invalid or expired',
   "קוד האיפוס אינו תקף או שפג תוקפו": "The reset code is invalid or has expired",
   "השרת החזיר נתונים לא תקינים": "The server returned invalid data",
   "שדה טקסט חסר בתשובת השרת": "A text field is missing from the response",
@@ -131,6 +137,8 @@ const messageTranslations: Record<string, string> = {
   "הסיסמאות אינן תואמות": "The passwords do not match",
   "יש להזין שם משתמש": "Please enter a username",
   "סיסמה מוגבלת ל־72 בתים בקידוד UTF-8": "Passwords are limited to 72 UTF-8 bytes",
+  "הסיסמה אינה עומדת בכל הדרישות המוצגות": "The password does not meet all the listed requirements",
+  "יש להזין סיסמה": "Enter your password",
   "שם משתמש: 3–40 אותיות, ספרות או קו תחתון": "Username: 3–40 letters, numbers or underscores",
   "המשתמש אינו זמין": "This account is unavailable",
   "לא ניתן לבצע פעולה בשם משתמש אחר": "You cannot act on behalf of another user",

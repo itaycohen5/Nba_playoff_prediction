@@ -31,6 +31,7 @@ export function Shell({children, user}: {children: React.ReactNode; user?: User 
     {href:'/dashboard',he:'המגרש',en:'The court'},
     {href:'/bracket',he:'עץ הפלייאוף',en:'Playoff bracket'},
     {href:'/history',he:'ההימורים שלי',en:'My bets'},
+    {href:'/account',he:'החשבון שלי',en:'My account'},
   ];
   return <div className="app-shell">
     <a className="skip-link" href="#main">{t('דלג לתוכן','Skip to content')}</a>
