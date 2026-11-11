@@ -3,6 +3,11 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+from backend.db.auth import auth_settings
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -45,3 +50,12 @@ def test_schema_export_is_offline_and_protects_all_application_tables():
         assert f'REVOKE ALL ON TABLE {table} FROM authenticated;' in result.stdout
     assert 'Legacy users table detected' in result.stdout
     assert 'DROP TABLE' not in result.stdout
+
+
+def test_hosted_auth_enforces_secure_cookies_and_explicit_origins():
+    with patch.dict(os.environ, VERCEL='1', COOKIE_SECURE='false', APP_ORIGINS='https://playoff.example'):
+        assert auth_settings() == (True, ['https://playoff.example'])
+
+    with patch.dict(os.environ, APP_ORIGINS='*'):
+        with pytest.raises(RuntimeError, match='must list explicit origins'):
+            auth_settings()

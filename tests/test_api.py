@@ -213,17 +213,45 @@ class APIRegressionTests(unittest.TestCase):
         self.assertEqual(self.client.post('/api/verify-email',json={'code':code}).status_code,200)
         self.client.post('/api/logout')
         self.register('other_user')
-        self.assertEqual(self.client.post('/api/me/email',json={'email':'changed@example.com','password':'QaPassw0rd!'}).status_code,409)
+        self.assertEqual(self.client.post('/api/me/email',json={'email':'changed@example.com','password':'QaPassw0rd!'}).status_code,200)
+        code = send.call_args.args[1]
+        self.assertEqual(self.client.post('/api/verify-email', json={'code':code}).status_code, 409)
+        self.assertFalse(self.client.get('/api/me/email').json()['verified'])
 
     @patch.dict(os.environ, {'GMAIL_USER': 'sender@gmail.com', 'GMAIL_APP_PASSWORD': 'test-only', 'PUBLIC_APP_URL': 'https://playoff.example'})
     @patch('backend.email_delivery.send_link',side_effect=api.email_delivery.DeliveryError('private provider details'))
     def test_failed_email_delivery_rolls_back_registration(self, send):
-        response=self.client.post('/api/register',json={'username':'mail_failure','password':'QaPassw0rd!','email':'new@example.com'})
-        self.assertEqual(response.status_code,503,response.text)
-        self.assertNotIn('private provider',response.text)
+        body = {'username':'mail_failure','password':'QaPassw0rd!','email':'new@example.com'}
+        for _ in range(3):
+            response = self.client.post('/api/register', json=body)
+            self.assertEqual(response.status_code, 503, response.text)
+            self.assertNotIn('private provider', response.text)
+        self.assertEqual(self.client.post('/api/register', json=body).status_code, 429)
+        self.assertEqual(send.call_count, 3)
         with SessionLocal() as db:
             self.assertEqual(db.query(User).count(),0)
             self.assertEqual(db.query(AccountEmail).count(),0)
+
+    @patch.dict(os.environ, {'GMAIL_USER': 'sender@gmail.com', 'GMAIL_APP_PASSWORD': 'test-only', 'PUBLIC_APP_URL': 'https://playoff.example'})
+    @patch('backend.email_delivery.send_link')
+    def test_recovery_delivery_failure_preserves_existing_code(self, send):
+        email = 'owner@example.com'
+        self.assertEqual(self.client.post('/api/register', json={
+            'username': 'qa_user', 'password': 'QaPassw0rd!', 'email': email,
+        }).status_code, 201)
+        code = send.call_args.args[1]
+        self.assertEqual(self.client.post('/api/verify-email', json={'code': code}).status_code, 200)
+        with SessionLocal.begin() as db:
+            old_code = issue_recovery_code(db, 'qa_user')
+        send.side_effect = api.email_delivery.DeliveryError('private provider details')
+        responses = [
+            self.client.post('/api/forgot-password', json={'email': address})
+            for address in (email, 'unknown@example.com')
+        ]
+        self.assertEqual([r.status_code for r in responses], [200, 200])
+        self.assertEqual(responses[0].json(), responses[1].json())
+        with SessionLocal() as db:
+            self.assertIsNotNone(db.get(AuthSession, recovery_key(old_code)))
 
     def test_unconfigured_email_is_honest_and_does_not_claim_delivery(self):
         with patch.dict(os.environ,{'GMAIL_APP_PASSWORD':''}):
@@ -299,6 +327,59 @@ class APIRegressionTests(unittest.TestCase):
                 break
         self.assertIn(429, statuses)
         self.assertTrue(all(status in (401, 429) for status in statuses), statuses)
+
+    def test_account_password_limit_is_shared_by_login_and_email_change(self):
+        self.register()
+        with patch.object(api, 'verify_password', return_value=False):
+            for index in range(20):
+                with patch.object(api, 'request_source', return_value=f'test-source-{index}'):
+                    response = self.client.post('/api/login', json={
+                        'username': 'qa_user', 'password': 'incorrect',
+                    })
+                    self.assertEqual(response.status_code, 401)
+        response = self.client.post('/api/me/email', json={
+            'email': 'owner@example.com', 'password': 'QaPassw0rd!',
+        })
+        self.assertEqual(response.status_code, 429)
+
+    def test_api_rejects_post_bodies_above_the_configured_limit(self):
+        with patch.object(api, 'MAX_API_BODY_BYTES', 40):
+            response = self.client.post('/api/login', json={
+                'username': 'qa_user', 'password': 'QaPassw0rd!',
+            })
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(response.headers['cache-control'], 'no-store')
+
+    def test_history_paginates_without_exposing_other_accounts(self):
+        self.register()
+        for _ in range(3):
+            self.assertEqual(self.client.post('/api/place-bet', json=self.bet()).status_code, 200)
+        with TestClient(api.app) as other:
+            self.register('other_user', other)
+            body = self.bet()
+            self.assertEqual(other.post('/api/place-bet', json=body).status_code, 200)
+            other_ids = {bet['id'] for bet in self.history(other)}
+        with patch.object(api, 'HISTORY_PAGE_SIZE', 2):
+            first = self.client.get('/api/me/history').json()
+            second = self.client.get('/api/me/history', params={
+                'before_id': first['next_before_id'],
+            }).json()
+        ids = [bet['id'] for bet in first['history'] + second['history']]
+        self.assertEqual(len(first['history']), 2)
+        self.assertEqual(len(second['history']), 1)
+        self.assertIsNone(second['next_before_id'])
+        self.assertEqual(ids, sorted(set(ids), reverse=True))
+        self.assertTrue(other_ids.isdisjoint(ids))
+
+    def test_pending_wager_limit_preserves_retries_and_balance(self):
+        self.register()
+        first, second = self.bet(), self.bet()
+        with patch.object(api, 'MAX_PENDING_BETS', 1):
+            accepted = self.client.post('/api/place-bet', json=first)
+            self.assertEqual(accepted.status_code, 200)
+            self.assertEqual(self.client.post('/api/place-bet', json=first).json(), accepted.json())
+            self.assertEqual(self.client.post('/api/place-bet', json=second).status_code, 409)
+        self.assertEqual(self.me()['balance'], 990)
 
     def test_all_mutations_and_history_require_authentication(self):
         for path, body in (

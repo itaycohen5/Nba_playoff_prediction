@@ -3,18 +3,17 @@ import hashlib
 import json
 import logging
 import math
-import os
 import re
 import secrets
 import string
 from collections import Counter, defaultdict
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import timedelta
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -23,7 +22,7 @@ from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
-from backend.db.auth import get_password_hash, verify_password
+from backend.db.auth import auth_settings, get_password_hash, verify_password
 from backend.db.database import get_db, initialize_database
 from backend.db.models import AccountEmail, AuthSession, Bet, GameHistory, LoginAttempt, Mutation, Tournament, User, utcnow
 from backend.db.recovery import recovery_key, issue_recovery_code
@@ -33,8 +32,45 @@ from backend.playoff_engine import PlayoffEngine, odds_for_probability
 logger = logging.getLogger(__name__)
 engine_nba = PlayoffEngine()
 COOKIE = 'nba_session'
-COOKIE_SECURE = os.getenv('COOKIE_SECURE', 'true' if os.getenv('VERCEL') else 'false').lower() == 'true'
-ORIGINS = [s.strip().rstrip('/') for s in os.getenv('APP_ORIGINS', 'http://localhost:3000,http://127.0.0.1:3000').split(',') if s.strip()]
+COOKIE_SECURE, ORIGINS = auth_settings()
+MAX_API_BODY_BYTES = 16 * 1024
+HISTORY_PAGE_SIZE = 100
+MAX_PENDING_BETS = 500
+
+
+class ApiBodyLimit:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope['type'] != 'http' or scope['method'] != 'POST' or not scope['path'].startswith('/api/'):
+            await self.app(scope, receive, send)
+            return
+
+        body = bytearray()
+        while True:
+            message = await receive()
+            if message['type'] == 'http.disconnect':
+                return
+            chunk = message.get('body', b'')
+            if len(body) + len(chunk) > MAX_API_BODY_BYTES:
+                response = JSONResponse({'detail': 'גוף הבקשה גדול מדי'}, status_code=413)
+                await response(scope, receive, send)
+                return
+            body.extend(chunk)
+            if not message.get('more_body', False):
+                break
+
+        pending = True
+
+        async def bounded_receive():
+            nonlocal pending
+            if pending:
+                pending = False
+                return {'type': 'http.request', 'body': bytes(body), 'more_body': False}
+            return await receive()
+
+        await self.app(scope, bounded_receive, send)
 
 @asynccontextmanager
 async def lifespan(_app):
@@ -42,6 +78,7 @@ async def lifespan(_app):
     yield
 
 app = FastAPI(title='Playoff Predict — סימולטור אישי', lifespan=lifespan)
+app.add_middleware(ApiBodyLimit)
 app.add_middleware(CORSMiddleware, allow_origins=ORIGINS, allow_credentials=True,
                    allow_methods=['GET', 'POST'], allow_headers=['Content-Type'])
 
@@ -401,29 +438,65 @@ def simulate_one(db, user, tournament, sid, expected_game=None):
 def health():
     return {'status': 'ok', 'data_source': getattr(engine_nba, 'data_source', 'season snapshot')}
 
+def request_source(request):
+    return request.client.host if request.client else 'local'
+
+
+def rate_counter(db, key, now, limit, message):
+    if db.get_bind().dialect.name == 'postgresql':
+        # Locking a missing row cannot serialize concurrent first requests.
+        db.execute(postgres_insert(LoginAttempt).values(key=key, failures=0, window_start=now)
+                   .on_conflict_do_nothing(index_elements=[LoginAttempt.key]))
+    attempt = db.query(LoginAttempt).filter_by(key=key).with_for_update().first()
+    if attempt is None:
+        attempt = LoginAttempt(key=key, failures=0, window_start=now)
+        db.add(attempt)
+    if now - attempt.window_start >= timedelta(minutes=15):
+        attempt.failures, attempt.window_start = 0, now
+    if attempt.failures >= limit:
+        retry = math.ceil((attempt.window_start + timedelta(minutes=15) - now).total_seconds())
+        raise HTTPException(429, message, headers={'Retry-After': str(retry)})
+    return attempt
+
+
+def password_attempt(db, request, username, password, user, failure_status, failure_message):
+    now = utcnow()
+    source = request_source(request)
+    credential = user.hashed_password if user else None
+    message = 'יותר מדי ניסיונות. נסו שוב בעוד 15 דקות'
+    source_key = hashlib.sha256(json.dumps(['password-source', source]).encode()).hexdigest()
+    account_key = hashlib.sha256(json.dumps(['password-account', username, credential]).encode()).hexdigest()
+    pair_key = hashlib.sha256(json.dumps([source, username, credential]).encode()).hexdigest()
+    source_counter = rate_counter(db, source_key, now, 80, message)
+    account_counter = rate_counter(db, account_key, now, 20, message)
+    pair_counter = rate_counter(db, pair_key, now, 10, message)
+    if not verify_password(password, credential):
+        for counter in (source_counter, account_counter, pair_counter):
+            counter.failures += 1
+        db.commit()
+        raise HTTPException(failure_status, failure_message)
+    account_counter.failures = pair_counter.failures = 0
+
+
 def mail_quota(db, request, email):
     now = utcnow()
-    source = request.client.host if request.client else 'local'
-    for scope, value, limit in (('source', source, 8), ('email', email, 3)):
+    for scope, value, limit in (('source', request_source(request), 8), ('email', email, 3)):
         key = hashlib.sha256(f'email-mail:{scope}:{value}'.encode()).hexdigest()
-        if db.get_bind().dialect.name == 'postgresql':
-            db.execute(postgres_insert(LoginAttempt).values(key=key, failures=0, window_start=now)
-                       .on_conflict_do_nothing(index_elements=[LoginAttempt.key]))
-        attempt = db.query(LoginAttempt).filter_by(key=key).with_for_update().first()
-        if attempt is None:
-            attempt = LoginAttempt(key=key, failures=0, window_start=now)
-            db.add(attempt)
-        if now - attempt.window_start >= timedelta(minutes=15):
-            attempt.failures, attempt.window_start = 0, now
-        if attempt.failures >= limit:
-            raise HTTPException(429, 'יותר מדי בקשות למייל. נסו שוב בעוד 15 דקות', headers={'Retry-After': '900'})
-        attempt.failures += 1
+        rate_counter(db, key, now, limit, 'יותר מדי בקשות למייל. נסו שוב בעוד 15 דקות').failures += 1
+
+
+@contextmanager
+def mail_transaction(db):
+    # Keep the reserved quota even if SMTP fails and account changes roll back.
+    try:
+        with db.begin_nested():
+            yield
+    except email_delivery.DeliveryError:
+        db.commit()
+        raise
 
 
 def prepare_email_verification(db, user, email):
-    if db.query(AccountEmail).filter(AccountEmail.email == email, AccountEmail.verified_at.is_not(None),
-                                    AccountEmail.user_id != user.id).first():
-        raise HTTPException(409, 'לא ניתן לשייך את כתובת המייל הזו לחשבון')
     entry = db.get(AccountEmail, user.id)
     if entry is None:
         entry = AccountEmail(user_id=user.id)
@@ -444,13 +517,16 @@ def register(req: RegisterRequest, response: Response, request: Request, db: Ses
     if req.email:
         email_delivery.settings()
         mail_quota(db, request, req.email)
-    user = User(username=req.username, hashed_password=get_password_hash(req.password), balance_cents=100000)
-    db.add(user)
-    db.flush()
-    db.add(Tournament(owner_id=user.id))
-    if req.email:
-        prepare_email_verification(db, user, req.email)
-    issue_session(db, user, response)
+    source_key = hashlib.sha256(json.dumps(['registration-source', request_source(request)]).encode()).hexdigest()
+    rate_counter(db, source_key, utcnow(), 12, 'יותר מדי הרשמות. נסו שוב בעוד 15 דקות').failures += 1
+    with mail_transaction(db):
+        user = User(username=req.username, hashed_password=get_password_hash(req.password), balance_cents=100000)
+        db.add(user)
+        db.flush()
+        db.add(Tournament(owner_id=user.id))
+        if req.email:
+            prepare_email_verification(db, user, req.email)
+        issue_session(db, user, response)
     db.commit()
     return wallet(user)
 
@@ -464,11 +540,11 @@ def account_email(user: User = Depends(current_user), db: Session = Depends(get_
 
 @app.post('/api/me/email')
 def bind_email(req: BindEmailRequest, request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    if not verify_password(req.password, user.hashed_password):
-        raise HTTPException(403, 'הסיסמה הנוכחית שגויה')
+    password_attempt(db, request, user.username, req.password, user, 403, 'הסיסמה הנוכחית שגויה')
     email_delivery.settings()
     mail_quota(db, request, req.email)
-    prepare_email_verification(db, user, req.email)
+    with mail_transaction(db):
+        prepare_email_verification(db, user, req.email)
     db.commit()
     return {'status': 'sent'}
 
@@ -484,6 +560,10 @@ def verify_email(req: VerifyEmailRequest, db: Session = Depends(get_db)):
     db.refresh(entry)
     if entry.verification_hash != digest or entry.verification_expires_at is None or entry.verification_expires_at <= utcnow():
         raise invalid
+    # Reveal a conflict only to the holder of the verification link.
+    if db.query(AccountEmail).filter(AccountEmail.email == entry.email, AccountEmail.verified_at.is_not(None),
+                                    AccountEmail.user_id != entry.user_id).first():
+        raise HTTPException(409, 'לא ניתן לשייך את כתובת המייל הזו לחשבון')
     entry.verified_at = utcnow()
     entry.verification_hash = entry.verification_expires_at = None
     db.commit()
@@ -497,8 +577,12 @@ def forgot_password(req: EmailRequest, request: Request, db: Session = Depends(g
         AccountEmail.email == req.email, AccountEmail.verified_at.is_not(None)).with_for_update().first()
     mail_quota(db, request, req.email)
     if user:
-        code = issue_recovery_code(db, user.username)
-        email_delivery.send_link(req.email, code, 'reset-password')
+        try:
+            with mail_transaction(db):
+                code = issue_recovery_code(db, user.username)
+                email_delivery.send_link(req.email, code, 'reset-password')
+        except email_delivery.DeliveryError:
+            logger.warning('Password recovery email delivery failed')
     db.commit()
     # Never disclose whether the address has a registered/verified account.
     return {'status': 'accepted'}
@@ -506,29 +590,7 @@ def forgot_password(req: EmailRequest, request: Request, db: Session = Depends(g
 @app.post('/api/login')
 def login(req: LoginRequest, response: Response, request: Request, db: Session = Depends(get_db)):
     user = db.query(User).filter_by(username=req.username).with_for_update().first()
-    # Verified password recovery starts a fresh window for the new credentials.
-    key_parts = [request.client.host if request.client else 'local', req.username,
-                 user.hashed_password if user else None]
-    key = hashlib.sha256(json.dumps(key_parts).encode()).hexdigest()
-    now = utcnow()
-    if db.get_bind().dialect.name == 'postgresql':
-        # SELECT FOR UPDATE cannot lock a counter that does not exist yet.
-        db.execute(postgres_insert(LoginAttempt).values(key=key, failures=0, window_start=now)
-                   .on_conflict_do_nothing(index_elements=[LoginAttempt.key]))
-    attempt = db.query(LoginAttempt).filter_by(key=key).with_for_update().first()
-    if attempt and (now - attempt.window_start).total_seconds() >= 900:
-        attempt.failures, attempt.window_start = 0, now
-    if attempt and attempt.failures >= 10:
-        raise HTTPException(429, 'יותר מדי ניסיונות. נסו שוב בעוד 15 דקות', headers={'Retry-After': '900'})
-    if not verify_password(req.password, user.hashed_password if user else None):
-        if attempt is None:
-            attempt = LoginAttempt(key=key, failures=0, window_start=now)
-            db.add(attempt)
-        attempt.failures += 1
-        db.commit()
-        raise HTTPException(401, 'שם המשתמש או הסיסמה שגויים')
-    if attempt:
-        attempt.failures = 0
+    password_attempt(db, request, req.username, req.password, user, 401, 'שם המשתמש או הסיסמה שגויים')
     issue_session(db, user, response)
     db.commit()
     return wallet(user)
@@ -616,6 +678,11 @@ def place_bet(req: PlaceBetRequest, user: User = Depends(current_user), db: Sess
     if previous is not None:
         return previous
     tournament = active_tournament(db, user, req.tournament_id)
+    pending_limit = db.query(Bet.id).filter_by(
+        tournament_id=tournament.id, user_id=user.id, status='pending',
+    ).offset(MAX_PENDING_BETS - 1).first()
+    if pending_limit is not None:
+        raise HTTPException(409, 'יש להכריע הימורים פתוחים לפני הוספת הימור חדש')
     odds, target = quote_bet(db, tournament, req)
     if (req.odds is not None and not math.isclose(req.odds, odds, abs_tol=.004, rel_tol=0)) or (
             req.target_value is not None and (target is None or not math.isclose(req.target_value, target, abs_tol=.0001, rel_tol=0))):
@@ -693,6 +760,8 @@ def reset_tournament(req: ActionRequest | None = None, user: User = Depends(curr
     if previous is not None:
         return previous
     tournament = active_tournament(db, user, req.tournament_id)
+    key = hashlib.sha256(f'tournament-reset:{user.id}'.encode()).hexdigest()
+    rate_counter(db, key, utcnow(), 10, 'יותר מדי איפוסי טורניר. נסו שוב בעוד 15 דקות').failures += 1
     pending = db.query(Bet).filter_by(tournament_id=tournament.id, user_id=user.id, status='pending').all()
     _, rounds, by_series, _ = bracket_state(db, tournament)
     eliminated = {
@@ -746,20 +815,32 @@ def tournament_status(user: User = Depends(current_user), db: Session = Depends(
     db.commit()
     return bracket
 
-@app.get('/api/me/history')
-def history(user: User = Depends(current_user), db: Session = Depends(get_db)):
-    bets = db.query(Bet).filter_by(user_id=user.id).order_by(Bet.id.desc()).all()
+def history_page(db, user, before_id):
+    query = db.query(Bet).filter_by(user_id=user.id)
+    if before_id is not None:
+        query = query.filter(Bet.id < before_id)
+    bets = query.order_by(Bet.id.desc()).limit(HISTORY_PAGE_SIZE + 1).all()
+    has_more = len(bets) > HISTORY_PAGE_SIZE
+    bets = bets[:HISTORY_PAGE_SIZE]
     return {'history': [{'id': b.id, 'tournament_id': b.tournament_id, 'matchup': b.matchup,
                          'game_number': b.game_number, 'bet_type': b.bet_type, 'team_bet_on': b.team_bet_on,
                          'target_value': b.target_value, 'amount': b.amount_cents / 100, 'odds': b.odds,
                          'potential_win': b.potential_win_cents / 100, 'paid_out': b.paid_out_cents / 100,
-                         'status': b.status, 'created_at': b.created_at.isoformat() + 'Z'} for b in bets]}
+                         'status': b.status, 'created_at': b.created_at.isoformat() + 'Z'} for b in bets],
+            'next_before_id': bets[-1].id if has_more else None}
+
+
+@app.get('/api/me/history')
+def history(user: User = Depends(current_user), db: Session = Depends(get_db),
+            before_id: Annotated[int | None, Query(gt=0, le=2147483647)] = None):
+    return history_page(db, user, before_id)
 
 @app.get('/api/user/{user_id}/history')
-def legacy_history(user_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+def legacy_history(user_id: int, user: User = Depends(current_user), db: Session = Depends(get_db),
+                   before_id: Annotated[int | None, Query(gt=0, le=2147483647)] = None):
     if user_id != user.id:
         raise HTTPException(403, 'אין הרשאה למשתמש זה')
-    return history(user, db)
+    return history_page(db, user, before_id)
 
 if __name__ == '__main__':
     import uvicorn

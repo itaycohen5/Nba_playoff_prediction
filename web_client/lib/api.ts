@@ -53,8 +53,18 @@ export function parseFutures(value: unknown): Future[] {
   return list(record(value).futures_lines, value => { const r = record(value); return {team: text(r.team), odds: number(r.odds)}; });
 }
 export interface HistoryBet { id: number; matchup: string; game_number: number; bet_type: string; team_bet_on: string; amount: number; odds: number; status: string; tournament_id: number; created_at: string; potential_win: number; paid_out: number }
-export function parseHistory(value: unknown): HistoryBet[] {
-  return list(record(value).history, value => { const r = record(value); return {id: number(r.id), matchup: text(r.matchup), game_number: number(r.game_number), bet_type: text(r.bet_type), team_bet_on: text(r.team_bet_on), amount: number(r.amount), odds: number(r.odds), status: text(r.status), tournament_id: number(r.tournament_id), created_at: text(r.created_at), potential_win: number(r.potential_win), paid_out: number(r.paid_out)}; });
+export function parseHistory(value: unknown) {
+  const page = record(value);
+  const history = list<HistoryBet>(page.history, value => {
+    const bet = record(value);
+    return {
+      id: number(bet.id), matchup: text(bet.matchup), game_number: number(bet.game_number),
+      bet_type: text(bet.bet_type), team_bet_on: text(bet.team_bet_on), amount: number(bet.amount),
+      odds: number(bet.odds), status: text(bet.status), tournament_id: number(bet.tournament_id),
+      created_at: text(bet.created_at), potential_win: number(bet.potential_win), paid_out: number(bet.paid_out),
+    };
+  });
+  return {history, nextBeforeId: page.next_before_id == null ? null : number(page.next_before_id)};
 }
 export interface Team { name: string; wins: number }
 export interface Matchup { t1: Team; t2: Team }
@@ -102,6 +112,10 @@ export function wagerValue(raw: string, balance: number): number {
 export const messageOf = (error: unknown) => error instanceof Error ? error.message : 'הפעולה נכשלה';
 
 const messageTranslations: Record<string, string> = {
+  'גוף הבקשה גדול מדי': 'The request is too large',
+  'יותר מדי הרשמות. נסו שוב בעוד 15 דקות': 'Too many registrations. Try again in 15 minutes.',
+  'יותר מדי איפוסי טורניר. נסו שוב בעוד 15 דקות': 'Too many tournament resets. Try again in 15 minutes.',
+  'יש להכריע הימורים פתוחים לפני הוספת הימור חדש': 'Settle open wagers before placing a new wager.',
   'יש להזין כתובת מייל תקינה': 'Enter a valid email address',
   'הסיסמה הנוכחית שגויה': 'The current password is incorrect',
   'שליחת המייל אינה זמינה כרגע. נסו שוב מאוחר יותר.': 'Email delivery is currently unavailable. Try again later.',
